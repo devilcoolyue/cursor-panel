@@ -23,6 +23,7 @@ from fastapi import HTTPException, Request
 
 from cursor_dashboard import desktop, server, sessions
 from cursor_dashboard.client import AuthExpired, CursorClient, RateLimited
+from cursor_dashboard.infrastructure.providers.cursor.authorization import verify_identity
 from cursor_dashboard.switch_links import download_command
 
 
@@ -56,10 +57,30 @@ class SessionTest(unittest.TestCase):
                 desktop.desktop_session(data, "auth0|user_test")
 
     def test_accepts_plain_and_encoded_values(self):
-        cookie = cookie_for()
-        for value in (cookie, cookie.replace("%3A%3A", "::"), "WorkosCursorSessionToken=" + cookie):
-            with self.subTest(value=value[:20]):
-                self.assertEqual(desktop.parse_session(value).subject, "auth0|user_test")
+        for subject in ("user_test", "auth0|user_test", "google-oauth2|user_test", "github|user_test"):
+            cookie = cookie_for(sub=subject)
+            for value in (cookie, cookie.replace("%3A%3A", "::"), "WorkosCursorSessionToken=" + cookie):
+                with self.subTest(subject=subject, value=value[:20]):
+                    self.assertEqual(desktop.parse_session(value).subject, subject)
+
+    def test_rejects_mismatched_or_malformed_oauth_subjects(self):
+        for subject in ("google-oauth2|user_other", "github|user_other", "|user_test",
+                        "google-oauth2||user_test", "auth0|google-oauth2|user_test",
+                        "google oauth2|user_test", "google-oauth2|user_test\n", None, 42, [], {}):
+            with self.subTest(subject=subject), self.assertRaises(desktop.DesktopSessionError):
+                desktop.parse_session(cookie_for(sub=subject))
+
+    def test_oauth_identity_checks_preserve_provider_prefix(self):
+        subject = "google-oauth2|user_test"
+        self.assertEqual(desktop.desktop_session(session_response(sub=subject), subject).subject, subject)
+        self.assertEqual(verify_identity({"email": "test@example.test", "sub": subject}, subject=subject),
+                         "test@example.test")
+        for other in ("google-oauth2|user_other", "github|user_test", "auth0|user_test", "user_test"):
+            with self.subTest(other=other):
+                with self.assertRaises(desktop.DesktopSessionError):
+                    desktop.desktop_session(session_response(sub=other), subject)
+                with self.assertRaises(desktop.DesktopSessionError):
+                    verify_identity({"email": "test@example.test", "sub": other}, subject=subject)
 
     def test_rejects_expired_missing_or_invalid_expiry(self):
         for expiry in (0, time.time() - 10, None, True, "2099", float("nan"), float("inf"), 10**400):

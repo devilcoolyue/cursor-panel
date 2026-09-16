@@ -21,7 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr
 from ..application.queries import QueryFailure
 from ..application.security import digest
 from ..client import AuthExpired, RateLimited
-from ..desktop import DesktopSessionError
+from ..desktop import CookieSessionError, DesktopSessionError
 from ..domain.core import (CoreError, Forbidden, NotFound, SecretError,
                             Throttled, Unauthenticated)
 from ..infrastructure.persistence.policy import audit
@@ -241,6 +241,10 @@ def create_app(core, *, public_origin, web_dir=None, manual_switch_preview=False
         # FastAPI's default includes rejected input (including Cookie/password).
         return error_response(422, "Invalid request fields")
 
+    @app.exception_handler(CookieSessionError)
+    async def cookie_error(request, error):
+        return JSONResponse({"detail": str(error), "code": error.code}, status_code=422)
+
     async def provider_error(request, error):
         return error_response(502, "Provider request failed; retry or reauthorize the account")
 
@@ -441,12 +445,14 @@ def create_app(core, *, public_origin, web_dir=None, manual_switch_preview=False
     def account(workspace_id: uuid.UUID, account_id: uuid.UUID, actor=Depends(current_actor)):
         return core.accounts.get(actor, str(workspace_id), str(account_id))
 
-    @app.post("/api/v1/workspaces/{workspace_id}/accounts", status_code=201, response_model=dto.AccountView)
+    @app.post("/api/v1/workspaces/{workspace_id}/accounts", status_code=201, response_model=dto.AccountView,
+              responses={422: {"model": dto.AuthorizationError}})
     async def authorize_account(workspace_id: uuid.UUID, body: Authorization, actor=Depends(current_actor)):
         return await core.accounts.authorize(actor, str(workspace_id), body.cookie.get_secret_value(),
                                              label=body.label, tags=body.tags)
 
-    @app.post("/api/v1/workspaces/{workspace_id}/accounts/{account_id}/authorization", response_model=dto.AccountView)
+    @app.post("/api/v1/workspaces/{workspace_id}/accounts/{account_id}/authorization", response_model=dto.AccountView,
+              responses={422: {"model": dto.AuthorizationError}})
     async def reauthorize_account(workspace_id: uuid.UUID, account_id: uuid.UUID, body: Authorization,
                                   actor=Depends(current_actor)):
         return await core.accounts.authorize(actor, str(workspace_id), body.cookie.get_secret_value(),

@@ -26,7 +26,7 @@ PASSWORD = 'Preview password 42!'
 
 
 def token(subject='user_preview'):
-    body = base64.urlsafe_b64encode(json.dumps({'sub': 'auth0|' + subject, 'type': 'session',
+    body = base64.urlsafe_b64encode(json.dumps({'sub': subject if '|' in subject else 'auth0|' + subject, 'type': 'session',
         'exp': int(time.time()) + 7 * 86400}).encode()).decode().rstrip('=')
     return 'eyJhbGciOiJIUzI1NiJ9.' + body + '.synthetic'
 
@@ -49,7 +49,9 @@ class PreviewGateway:
         else:
             subject = token_claims(args[0])['sub'].removeprefix('auth0|')
         if name in {'me', 'desktop_me'}:
-            return {'email': subject.removeprefix('user_') + '@example.test', 'sub': 'auth0|' + subject, 'authId': 'auth0|' + subject}
+            identity = subject if '|' in subject else 'auth0|' + subject
+            return {'email': subject.split('|', 1)[-1].removeprefix('user_') + '@example.test',
+                    'sub': identity, 'authId': identity}
         if name == 'desktop_plan':
             return {'planInfo': {'planName': 'Pro', 'includedAmountCents': 2000}}
         if name == 'desktop_profile':

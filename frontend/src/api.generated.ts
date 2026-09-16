@@ -846,6 +846,13 @@ export interface components {
             /** Tags */
             tags?: string[];
         };
+        /** AuthorizationError */
+        AuthorizationError: {
+            /** Detail */
+            detail: string;
+            /** Code */
+            code?: ("invalid_session_cookie" | "cookie_account_mismatch") | null;
+        };
         /** Bootstrap */
         Bootstrap: {
             /**
@@ -2254,13 +2261,13 @@ export interface operations {
                     "application/json": components["schemas"]["AccountView"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Unprocessable Entity */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["AuthorizationError"];
                 };
             };
         };
@@ -2388,13 +2395,13 @@ export interface operations {
                     "application/json": components["schemas"]["AccountView"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Unprocessable Entity */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["AuthorizationError"];
                 };
             };
         };

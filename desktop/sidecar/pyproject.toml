@@ -1,6 +1,6 @@
 [project]
 name = "cursor-panel-desktop-sidecar"
-version = "0.0.6"
+version = "0.0.7"
 license = "MIT"
 requires-python = ">=3.12,<3.13"
 dependencies = ["cursor-dashboard", "keyring>=25,<26", "psutil>=7,<8", "pyinstaller>=6.16,<7"]

@@ -1,6 +1,6 @@
 # 支持平台与验证边界
 
-当前版本 `0.0.6` / V2 preview。以下“通过”均指报告中的隔离合成测试，不等同于真实 Cursor 会话或所有干净设备验证。当前版本的构建与验证记录随 [GitHub Release](https://github.com/devilcoolyue/cursor-panel/releases/tag/v0.0.6) 提供；历史 P6 结果见 [验证报告](plans/p6-verification.md)，下表保留 P5 更完整页面/原生适配的历史依据。
+当前版本 `0.0.7` / V2 preview。以下“通过”均指报告中的隔离合成测试，不等同于真实 Cursor 会话或所有干净设备验证。当前版本的构建与验证记录随 [GitHub Release](https://github.com/devilcoolyue/cursor-panel/releases/tag/v0.0.7) 提供；历史 P6 结果见 [验证报告](plans/p6-verification.md)，下表保留 P5 更完整页面/原生适配的历史依据。
 
 | 入口 / 平台 | 有记录的验证 | 当前边界 |
 | --- | --- | --- |

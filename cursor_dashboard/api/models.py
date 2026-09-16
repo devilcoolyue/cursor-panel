@@ -4,6 +4,11 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 
+class AuthorizationError(BaseModel):
+    detail: str
+    code: Literal['invalid_session_cookie', 'cookie_account_mismatch'] | None = None
+
+
 class WorkspaceCapabilities(BaseModel):
     manage_accounts: bool
     manage_members: bool

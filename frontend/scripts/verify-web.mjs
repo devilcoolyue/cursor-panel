@@ -13,6 +13,7 @@ import { verifyListRefresh } from './verify-list-refresh.mjs'
 import { verifySidebar } from './verify-sidebar.mjs'
 import { verifyPublicDocs } from './help-flows.mjs'
 import { fixtureContext } from './update-fixture.mjs'
+import { verifyCookieAuthorization } from './verify-cookie-authorization.mjs'
 
 const root = fileURLToPath(new URL('../../', import.meta.url))
 const portProbe = createServer()
@@ -66,6 +67,19 @@ try {
   assert.equal(await owner.getByLabel('登录邮箱', { exact: true }).inputValue(), 'owner@example.test')
   await login(owner, 'owner')
   await waitRows(owner, 2)
+  await verifyCookieAuthorization(owner)
+  // Unknown error codes and arbitrary server details must retain the generic message.
+  const authorizationPattern = '**/api/v1/workspaces/*/accounts'
+  await owner.route(authorizationPattern, route => route.request().method() === 'POST'
+    ? route.fulfill({ status: 422, json: { code: 'constructor', detail: '<b>synthetic-server-secret</b>' } })
+    : route.continue())
+  await click(owner, '＋ 添加账号')
+  await owner.getByLabel('Cursor 网页会话 Cookie').fill('synthetic-invalid-cookie')
+  await click(owner, '保存')
+  await visible(owner.getByRole('alert'))
+  assert.equal(await owner.getByRole('alert').innerText(), '请检查填写的内容。')
+  await click(owner, '取消')
+  await owner.unroute(authorizationPattern)
   let listReads = 0
   owner.on('request', request => { if (/\/api\/v1\/workspaces\/[^/]+\/accounts\?/.test(request.url())) listReads++ })
   await verifyListRefresh(owner, () => listReads)

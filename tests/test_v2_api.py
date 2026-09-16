@@ -6,9 +6,14 @@ from http.cookies import SimpleCookie
 import json
 from urllib.parse import urlsplit
 import unittest
+from unittest.mock import AsyncMock, patch
+
+import requests
 
 from cursor_dashboard.api.app import create_app
+from cursor_dashboard.desktop import DesktopSessionError
 from test_core import data
+from test_desktop import cookie_for
 from test_identity import IdentityFixture, PASSWORD
 
 
@@ -73,6 +78,25 @@ class V2HTTPTest(IdentityFixture, unittest.IsolatedAsyncioTestCase):
         self.client = APIClient(self.app)
         self.account_row = self.account(snapshot=data(42))
         self.path = f"/api/v1/workspaces/{self.first}/accounts"
+
+    async def test_cookie_errors_are_422_and_provider_errors_remain_sanitized_502(self):
+        await self.client.login()
+        cases = [(cookie_for(sub='google-oauth2|user_other'), 'cookie_account_mismatch'),
+                 (cookie_for(exp=1), 'invalid_session_cookie'), ('synthetic-invalid-cookie', 'invalid_session_cookie')]
+        with patch.object(self.core.accounts, 'gateway', new_callable=AsyncMock) as gateway:
+            for cookie, code in cases:
+                with self.subTest(code=code):
+                    status, body, _ = await self.client.request('POST', self.path, {'cookie': cookie})
+                    self.assertEqual(status, 422)
+                    self.assertEqual(body['code'], code)
+                    self.assertNotIn(cookie, json.dumps(body))
+            gateway.assert_not_awaited()
+            for error in (requests.Timeout('synthetic-upstream-secret'), DesktopSessionError('synthetic-upstream-secret')):
+                gateway.side_effect = error
+                status, body, _ = await self.client.request('POST', self.path, {'cookie': cookie_for()})
+                self.assertEqual(status, 502)
+                self.assertNotIn('synthetic-upstream-secret', json.dumps(body))
+                self.assertNotIn('code', body)
 
     async def test_quota_reference_edit_is_scoped_validated_and_preserves_freshness(self):
         account = self.account(email='reference@example.test', marker='reference', snapshot=data())

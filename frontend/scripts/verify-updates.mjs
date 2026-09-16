@@ -28,7 +28,24 @@ const nextVersion = current.split('.').map((part, index) => index === 2 ? Number
 const fixtureMe = admin => ({ id: 'fixture-user', login: 'fixture@example.test', instance_admin: admin,
   workspaces: [{ id: 'fixture-space', name: '测试空间', kind: 'personal', role: 'owner', capabilities: {} }] })
 const bootstrap = desktop => ({ mode: desktop ? 'local' : 'server', initialized: true, api_version: 1, app_version: current, capabilities: {} })
-const latest = { current_version: current, latest_version: nextVersion, available: true, installable: true, notes: '<script>bad()</script>\n新增自动更新', release_url: `https://github.com/devilcoolyue/cursor-panel/releases/tag/v${nextVersion}`, published_at: null }
+const latest = { current_version: current, latest_version: nextVersion, available: true, installable: true, notes: `# v${nextVersion} 更新内容
+
+## 账号授权
+
+- 修复 **Google OAuth** 账号无法导入的问题
+- 错误 Cookie 会显示明确原因，不再误报网络失败
+
+使用 \`WorkosCursorSessionToken\` 完成授权，详情见 [发行记录](https://example.test/releases/v${nextVersion})。
+
+> 更新会保留本地账号和设置。
+
+![不会自动加载的远程图片](https://example.test/tracker.png)
+
+\`\`\`text
+Cookie -> 桌面凭证
+\`\`\`
+
+<script>bad()</script>`, release_url: `https://github.com/devilcoolyue/cursor-panel/releases/tag/v${nextVersion}`, published_at: null }
 await mkdir(join(root, 'output/playwright'), { recursive: true })
 try {
   for (const admin of [false, true]) {
@@ -84,7 +101,21 @@ try {
     await page.getByRole('button', { name: '检查更新', exact: true }).click()
     await page.getByText(`发现新版本 v${nextVersion}`, { exact: true }).waitFor()
     await page.getByText('本次更新内容', { exact: true }).click()
+    const notes = page.locator('.about-notes-content')
+    assert.equal(await notes.getByRole('heading', { name: `v${nextVersion} 更新内容`, exact: true }).count(), 1)
+    assert.equal(await notes.getByRole('heading', { name: '账号授权', exact: true }).count(), 1)
+    assert.equal(await notes.getByRole('listitem').count(), 2)
+    assert.equal(await notes.locator('strong').innerText(), 'Google OAuth')
+    assert.equal(await notes.locator('code').first().innerText(), 'WorkosCursorSessionToken')
+    assert.equal(await notes.locator('pre code').innerText(), 'Cookie -> 桌面凭证\n')
+    const notesLink = notes.getByRole('link', { name: '发行记录', exact: true })
+    assert.equal(await notesLink.getAttribute('target'), '_blank')
+    assert.equal(await notesLink.getAttribute('rel'), 'noopener noreferrer')
+    assert.equal(await notes.locator('img').count(), 0)
+    assert.equal(await notes.getByRole('link', { name: '不会自动加载的远程图片', exact: true }).getAttribute('href'), 'https://example.test/tracker.png')
     assert.equal(await page.locator('.about-notes script').count(), 0)
+    assert.match(await notes.innerText(), /<script>bad\(\)<\/script>/)
+    assert.doesNotMatch(await notes.innerText(), /(^|\n)#{1,6} |\*\*|^- /m)
     if (admin) {
       await page.screenshot({ path: join(root, 'output/playwright/update-web.png'), fullPage: true })
       await page.getByRole('button', { name: '一键升级服务器', exact: true }).click()
@@ -158,6 +189,8 @@ try {
   assert(await page.locator('.version-badge').evaluate(el => el.classList.contains('has-update')), 'A failed check preserves the known update notice')
   await page.evaluate(() => { window.updateFixture.failCheck = false })
   await page.getByRole('button', { name: '检查更新', exact: true }).click()
+  await page.getByText('本次更新内容', { exact: true }).click()
+  await page.locator('.about-notes-content').getByRole('heading', { name: `v${nextVersion} 更新内容`, exact: true }).waitFor()
   await page.getByRole('button', { name: '一键升级并重启', exact: true }).click()
   await page.getByText('正在下载 50%', { exact: true }).waitFor()
   assert(await page.getByRole('button', { name: '正在升级…', exact: true }).isDisabled())

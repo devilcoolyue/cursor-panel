@@ -9,6 +9,11 @@ export class ApiError extends Error {
   constructor(public status: number, message: string) { super(message) }
 }
 
+const cookieErrors = new Map<string, string>([
+  ['invalid_session_cookie', 'Cookie 格式无效或已过期，请重新登录 Cursor 网页版并复制完整的会话 Cookie。'],
+  ['cookie_account_mismatch', 'Cookie 的账号与 Token 不一致，请重新复制同一账号的完整会话 Cookie。'],
+])
+
 /** One in-memory request scope per user/workspace. Even non-abortable responses are discarded. */
 export class ApiClient {
   csrf = ''
@@ -41,8 +46,9 @@ export class ApiClient {
         const messages: Record<number, string> = { 401: '登录已失效，请重新登录。', 403: '当前没有此操作权限，请重新载入权限。',
           404: '内容不可用，可能已删除或收回授权。', 409: '状态已发生变化，请重新载入后重试。', 422: '请检查填写的内容。',
           426: '实例协议不兼容，请升级服务端或桌面应用。', 429: '操作过于频繁，请稍后重试。', 502: '服务请求失败，请检查网络后重试。', 503: '服务暂不可用，请联系实例管理员。' }
-        // Known public errors may guide recovery; never render arbitrary upstream HTML.
-        throw new ApiError(response.status, messages[response.status] || '请求失败，请稍后重试。')
+        // Only recognized codes select public messages; never render upstream detail or credentials.
+        const cookieMessage = response.status === 422 && typeof data?.code === 'string' ? cookieErrors.get(data.code) : undefined
+        throw new ApiError(response.status, cookieMessage || messages[response.status] || '请求失败，请稍后重试。')
       }
       return data as T
     } finally {

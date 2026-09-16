@@ -55,15 +55,15 @@ docker compose --env-file deploy/v2/.env \
 本地构建可用 `TAURI_SIGNING_PRIVATE_KEY_PATH` 指向私钥后运行 `dev/update-manifest.py`：
 
 ```bash
-uv run --frozen python dev/update-manifest.py desktop --tag v0.0.6 \
+uv run --frozen python dev/update-manifest.py desktop --tag v0.0.7 \
   --target darwin-aarch64 --artifact 'desktop/src-tauri/target/release/bundle/macos/Cursor Panel.app' \
   --output output/updates
-uv run --frozen python dev/update-manifest.py server --tag v0.0.6 \
+uv run --frozen python dev/update-manifest.py server --tag v0.0.7 \
   --artifact output/image.tar --image-metadata output/image.json --output output/updates
-uv run --frozen python dev/update-manifest.py merge --tag v0.0.6 --output output/updates
+uv run --frozen python dev/update-manifest.py merge --tag v0.0.7 --output output/updates
 ```
 
-示例版本必须与所有包的版本一致。macOS `.app` 必须已通过本地签名完整性校验；Windows 输入 NSIS 安装器。`merge` 要求三个桌面平台及服务器清单齐全并验证签名。`v0.0.6` 随发布提供这些更新产物。`v0.0.1` 未内置更新器，用户需先手动安装一次 `v0.0.2`；后续版本可通过应用内更新。
+示例版本必须与所有包的版本一致。macOS `.app` 必须已通过本地签名完整性校验；Windows 输入 NSIS 安装器。`merge` 要求三个桌面平台及服务器清单齐全并验证签名。`v0.0.7` 随发布提供这些更新产物。`v0.0.1` 未内置更新器，用户需先手动安装一次 `v0.0.2`；后续版本可通过应用内更新。
 
 ## 验证
 

@@ -17,11 +17,19 @@ from urllib.parse import unquote
 
 SCRIPTS = Path(__file__).with_name("scripts")
 USER_ID = re.compile(r"user_[A-Za-z0-9_-]+\Z")
+SUBJECT = re.compile(r"(?:[A-Za-z0-9_-]+\|)?(user_[A-Za-z0-9_-]+)\Z")
 JWT_PART = re.compile(r"[A-Za-z0-9_-]+\Z")
 
 
 class DesktopSessionError(ValueError):
     pass
+
+
+class CookieSessionError(DesktopSessionError):
+    """Local input validation, separate from upstream desktop credential failures."""
+    def __init__(self, message: str, code: str = "invalid_session_cookie"):
+        super().__init__(message)
+        self.code = code
 
 
 @dataclass(frozen=True)
@@ -46,11 +54,17 @@ def parse_session(cookie: str) -> DesktopSession:
         value = value.partition("=")[2]
     user_id, separator, token = value.partition("::")
     if not separator or not USER_ID.fullmatch(user_id) or len(token) > 12000:
-        raise DesktopSessionError("此 Cookie 不支持桌面切换，请重新粘贴完整的会话 Cookie。")
-    claims = token_claims(token)
+        raise CookieSessionError("此 Cookie 不支持桌面切换，请重新粘贴完整的会话 Cookie。")
+    try:
+        claims = token_claims(token)
+    except DesktopSessionError as error:
+        raise CookieSessionError(str(error)) from None
     subject = claims.get("sub")
-    if subject not in (user_id, f"auth0|{user_id}"):
-        raise DesktopSessionError("Cookie 的账号与 Token 不一致，请重新授权。")
+    match = SUBJECT.fullmatch(subject) if isinstance(subject, str) else None
+    if not match or match.group(1) != user_id:
+        raise CookieSessionError("Cookie 的账号与 Token 不一致，请重新授权。", "cookie_account_mismatch")
+    # The Cookie contains a bare user ID. Keep the full subject for subsequent
+    # provider identity checks; different OAuth providers are not interchangeable.
     return DesktopSession(token, subject, int(claims["exp"]), token_type=claims.get("type", ""))
 
 

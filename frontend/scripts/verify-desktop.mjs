@@ -15,6 +15,7 @@ import { selectOption } from './ui-controls.mjs'
 import { verifyQuotaReferences } from './verify-quota-references.mjs'
 import { verifyListRefresh } from './verify-list-refresh.mjs'
 import { verifyDesktopHelp } from './help-flows.mjs'
+import { verifyCookieAuthorization } from './verify-cookie-authorization.mjs'
 import { currentRelease } from './update-fixture.mjs'
 const root = fileURLToPath(new URL('../../', import.meta.url))
 const directory = await mkdtemp(join(tmpdir(), 'cursor-p4-browser-'))
@@ -133,6 +134,7 @@ try {
   await waitRows(page, 2)
   await verifyDesktopHelp(page)
   if (!process.argv.includes('--help-only')) {
+  await verifyCookieAuthorization(page)
   assert.equal(await page.getByText('团队协作', { exact: true }).count(), 0)
   assert.equal(await page.getByText('退出登录', { exact: true }).count(), 0)
   const sidebar = page.getByRole('complementary', { name: '侧栏导航' })

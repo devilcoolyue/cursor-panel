@@ -36,6 +36,8 @@ P3 新 Web 位于 `frontend/`，通过 OpenAPI 生成类型；手工切换适配
 
 初次授权流程为：解析 Cookie 格式与到期声明，调用网页 `me` 校验邮箱和 subject，经 `desktop_callback` 和 `desktop_poll` 换取桌面凭证，再调用 `desktop_me` 校验身份。Token 的本地解析不验证签名，身份确认依赖远端接口。新增/重新授权还需完成 6 项桌面额度请求，成功后才提交账号和快照。
 
+Cookie 的裸 `user_…` 可对应裸 subject 或 `提供方|user_…`（如 `auth0|`、`google-oauth2|`、`github|`）。仅在 Cookie ID 比较处提取后缀；完整 OAuth subject 继续用于上游身份校验及存储，不能因后缀相同就把不同提供方视为同一账号。V2 的本地 Cookie 校验失败返回 422 和固定错误码（`invalid_session_cookie` / `cookie_account_mismatch`），前端按白名单显示提示；上游请求/桌面凭证失败仍返回脱敏的 502。合成回归覆盖导入、重新授权、续期、身份不匹配及 Web/桌面提示，真实 OAuth 会话仍需专用测试账号验证。
+
 常规刷新、明细与切换先调用 `ensure_account()`。保存的凭证可用时直接复用；有 RT 时只走桌面续期，无 RT 的旧记录才通过 Cookie 迁移，已经标记撤销的记录直接要求重新授权。
 
 续期窗口为 `expires_at - min(TOKEN_REFRESH_MARGIN, max(30, lifetime * 0.2))`，其中 `lifetime = token_expires_at - auth_refreshed_at`。这是下一次查询时执行的按需逻辑，没有独立的精确定时续期任务。桌面请求遇到 `AuthExpired` 后强制续期并重试一次。
