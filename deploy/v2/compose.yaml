@@ -11,7 +11,7 @@ services:
     build:
       context: ../..
       args:
-        APP_VERSION: ${CURSOR_PANEL_VERSION:-0.0.7}
+        APP_VERSION: ${CURSOR_PANEL_VERSION:-0.0.8}
         SOURCE_REVISION: ${CURSOR_PANEL_REVISION:-unrecorded}
     environment:
       CURSOR_PUBLIC_ORIGIN: https://${CURSOR_PANEL_DOMAIN:?Set CURSOR_PANEL_DOMAIN in .env}

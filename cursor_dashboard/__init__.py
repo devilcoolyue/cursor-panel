@@ -8,7 +8,7 @@
 from .client import ENDPOINTS, AuthExpired, CursorClient, RateLimited, fetch_one
 from .usage import assemble, collect
 
-__version__ = "0.0.7"
+__version__ = "0.0.8"
 
 __all__ = [
     "AuthExpired",
