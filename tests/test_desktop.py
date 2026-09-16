@@ -75,12 +75,32 @@ class SessionTest(unittest.TestCase):
         self.assertEqual(desktop.desktop_session(session_response(sub=subject), subject).subject, subject)
         self.assertEqual(verify_identity({"email": "test@example.test", "sub": subject}, subject=subject),
                          "test@example.test")
-        for other in ("google-oauth2|user_other", "github|user_test", "auth0|user_test", "user_test"):
+        for other in ("google-oauth2|user_other", "github|user_test", "auth0|user_test"):
             with self.subTest(other=other):
                 with self.assertRaises(desktop.DesktopSessionError):
                     desktop.desktop_session(session_response(sub=other), subject)
                 with self.assertRaises(desktop.DesktopSessionError):
                     verify_identity({"email": "test@example.test", "sub": other}, subject=subject)
+        with self.assertRaises(desktop.DesktopSessionError):
+            desktop.desktop_session(session_response(sub="user_test"), subject)
+
+    def test_bare_profile_identity_matches_oauth_token_subject(self):
+        for provider in ("auth0", "google-oauth2", "github"):
+            for field in ("sub", "authId"):
+                with self.subTest(provider=provider, field=field):
+                    self.assertEqual(verify_identity({"email": "test@example.test", field: "user_test"},
+                                                     subject=f"{provider}|user_test"), "test@example.test")
+
+    def test_profile_identity_compatibility_rejects_other_accounts_and_providers(self):
+        subject = "google-oauth2|user_test"
+        for actual in ("user_other", "|user_test", "google-oauth2||user_test", "user_test\n",
+                       "github|user_test", "auth0|user_test", None, 42, [], {}):
+            with self.subTest(actual=actual), self.assertRaises(desktop.DesktopSessionError):
+                verify_identity({"email": "test@example.test", "sub": actual}, subject=subject)
+        for identity in ({"email": "other@example.test", "sub": "user_test"},
+                         {"email": "test@example.test", "authId": "github|user_test", "sub": "user_test"}):
+            with self.assertRaises(desktop.DesktopSessionError):
+                verify_identity(identity, email="test@example.test", subject=subject)
 
     def test_rejects_expired_missing_or_invalid_expiry(self):
         for expiry in (0, time.time() - 10, None, True, "2099", float("nan"), float("inf"), 10**400):

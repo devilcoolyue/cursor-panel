@@ -1,6 +1,7 @@
 """Real private HTTP and packaged OS key-store persistence using owned temporary data."""
 from __future__ import annotations
 import json
+import base64
 import faulthandler
 import os
 from pathlib import Path
@@ -10,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from urllib.error import HTTPError
 from urllib.request import build_opener, ProxyHandler, Request
@@ -96,6 +98,24 @@ class LocalBackendTest(unittest.TestCase):
         finally:
             self.child.stdout.close()
             self.child.stderr.close()
+
+    def test_oauth_import_through_packaged_backend(self):
+        status, me = self.request('/api/v1/me')
+        self.assertEqual(status, 200)
+        workspace = me['workspaces'][0]['id']
+        subject = 'google-oauth2|user_packaged_oauth'
+        claims = {'sub': subject, 'type': 'web', 'exp': int(time.time()) + 3600}
+        payload = base64.urlsafe_b64encode(json.dumps(claims).encode()).decode().rstrip('=')
+        cookie = f'user_packaged_oauth%3A%3AeyJhbGciOiJIUzI1NiJ9.{payload}.synthetic'
+        path = f'/api/v1/workspaces/{workspace}/accounts'
+        status, account = self.request(path, 'POST', {'cookie': cookie, 'label': 'Packaged OAuth'})
+        self.assertEqual(status, 201, account)
+        self.assertEqual(account['email'], 'packaged_oauth@example.test')
+        self.assertIsNotNone(account['data'])
+        self.assertNotIn(cookie, json.dumps(account))
+        status, refreshed = self.request(f"{path}/{account['id']}/authorization", 'POST', {'cookie': cookie})
+        self.assertEqual(status, 200, refreshed)
+        self.assertNotEqual(account['authorization_generation'], refreshed['authorization_generation'])
 
     def cleanup(self):
         if self.child.poll() is None:

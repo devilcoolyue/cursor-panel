@@ -3,7 +3,18 @@ from __future__ import annotations
 import asyncio
 import requests
 from ....client import AuthExpired
-from ....desktop import DesktopSessionError, desktop_session, login_challenge, parse_session
+from ....desktop import DesktopSessionError, SUBJECT, USER_ID, desktop_session, login_challenge, parse_session
+
+
+def _profile_subject_matches(actual, expected):
+    if not isinstance(actual, str) or not isinstance(expected, str):
+        return False
+    if actual.removeprefix("auth0|") == expected.removeprefix("auth0|"):
+        return True
+    # Cursor's web profile may omit the token's OAuth provider prefix. This
+    # compatibility is for profile responses only; token subjects stay intact.
+    token_subject = SUBJECT.fullmatch(expected)
+    return bool(USER_ID.fullmatch(actual) and token_subject and actual == token_subject.group(1))
 
 
 def verify_identity(data, *, email=None, subject=None):
@@ -13,8 +24,7 @@ def verify_identity(data, *, email=None, subject=None):
         raise AuthExpired("会话已失效，请重新登录网页版并更新 Cookie。")
     if email and actual_email.casefold() != email.casefold():
         raise DesktopSessionError("凭证与所选账号的邮箱不一致。")
-    if subject and (not isinstance(actual_subject, str)
-                    or actual_subject.removeprefix("auth0|") != subject.removeprefix("auth0|")):
+    if subject and not _profile_subject_matches(actual_subject, subject):
         raise DesktopSessionError("凭证与所选账号的身份不一致。")
     return actual_email
 

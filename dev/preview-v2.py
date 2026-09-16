@@ -50,8 +50,11 @@ class PreviewGateway:
             subject = token_claims(args[0])['sub'].removeprefix('auth0|')
         if name in {'me', 'desktop_me'}:
             identity = subject if '|' in subject else 'auth0|' + subject
-            return {'email': subject.split('|', 1)[-1].removeprefix('user_') + '@example.test',
-                    'sub': identity, 'authId': identity}
+            user_id = subject.split('|', 1)[-1]
+            email = user_id.removeprefix('user_') + '@example.test'
+            # The web profile returns a bare sub, while issued tokens retain the provider.
+            return {'email': email, 'sub': user_id} if name == 'me' else {
+                'email': email, 'authId': identity}
         if name == 'desktop_plan':
             return {'planInfo': {'planName': 'Pro', 'includedAmountCents': 2000}}
         if name == 'desktop_profile':
