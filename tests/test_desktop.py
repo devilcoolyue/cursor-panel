@@ -309,7 +309,9 @@ while True:
         finally:
             try:
                 os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
+            # The command has already exited. Some macOS runners retain the
+            # process-group record briefly but reject a second cleanup signal.
+            except (ProcessLookupError, PermissionError):
                 pass
             process.wait()
             reader.join(timeout=2)
