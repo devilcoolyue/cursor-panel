@@ -40,7 +40,7 @@ Use the standalone desktop app or bring your own server.
 - **Keep credentials protected.** Account credentials are encrypted at rest. Desktop keys live in the system credential store; encrypted archives support account transfer and key recovery.
 - **Make it yours.** Six skins, independent light / dark modes, configurable account cards, a collapsible sidebar, and a responsive Web layout. Built-in guidance helps you get started.
 
-This README describes the current V2 preview source. The latest downloadable release is [v0.0.8](https://github.com/devilcoolyue/cursor-panel/releases/tag/v0.0.8); its exact contents are listed in the [release archive](docs/archive/v0.0.8.md). Screenshots use synthetic preview data.
+This README describes the current V2 preview source. The latest downloadable release is [v0.0.9](https://github.com/devilcoolyue/cursor-panel/releases/tag/v0.0.9); its exact contents are listed in the [release archive](docs/archive/v0.0.9.md). Screenshots use synthetic preview data.
 
 ## Choose your setup
 
@@ -57,13 +57,13 @@ Local and remote databases remain independent. Changing a desktop connection doe
 
 ### Desktop — for personal use
 
-Download the package for your platform from **[v0.0.8 Releases](https://github.com/devilcoolyue/cursor-panel/releases/tag/v0.0.8)**:
+Download the package for your platform from **[v0.0.9 Releases](https://github.com/devilcoolyue/cursor-panel/releases/tag/v0.0.9)**:
 
 | Platform | Download |
 | --- | --- |
-| macOS · Apple Silicon | [DMG for arm64](https://github.com/devilcoolyue/cursor-panel/releases/download/v0.0.8/Cursor.Panel_0.0.8_aarch64.dmg) |
-| macOS · Intel | [DMG for x64](https://github.com/devilcoolyue/cursor-panel/releases/download/v0.0.8/Cursor.Panel_0.0.8_x64.dmg) |
-| Windows · x64 | [Installer for x64](https://github.com/devilcoolyue/cursor-panel/releases/download/v0.0.8/Cursor.Panel_0.0.8_x64-setup.exe) |
+| macOS · Apple Silicon | [DMG for arm64](https://github.com/devilcoolyue/cursor-panel/releases/download/v0.0.9/Cursor.Panel_0.0.9_aarch64.dmg) |
+| macOS · Intel | [DMG for x64](https://github.com/devilcoolyue/cursor-panel/releases/download/v0.0.9/Cursor.Panel_0.0.9_x64.dmg) |
+| Windows · x64 | [Installer for x64](https://github.com/devilcoolyue/cursor-panel/releases/download/v0.0.9/Cursor.Panel_0.0.9_x64-setup.exe) |
 
 1. Install and open Cursor Panel. A local user and personal workspace are created automatically; Python, Node.js, and a server are not required.
 2. Choose **Add account** (`添加账号`) and authorize it using your Cursor web session material. See the [account guide](docs/user-guide.md#accounts) for the supported input.
@@ -176,7 +176,7 @@ Use your server address and login; replace the UUID placeholders with IDs return
 - **Quota data is a snapshot.** Failed refreshes preserve the last successful result and its timestamp. Percentages follow Cursor's response; dollar limits may be inferred. The data comes from non-public interfaces and is not an official billing statement or a compatibility guarantee.
 - **Refresh behavior depends on the entry point.** The local desktop can refresh in the background when tray mode is enabled. The V2 server currently refreshes manually or on demand; it has no periodic quota scheduler.
 - **Remote desktop switching remains disabled.** Remote viewing, management, and device login are available. Real Cursor session renewal and sharing across devices still need validation; synthetic tests do not establish that support.
-- **Updates require published update packages.** Source includes update checks and signed update support. Signed update packages are included in v0.0.8; server upgrades also need the optional Linux amd64 host updater. Users of v0.0.1 must install v0.0.2 manually once to get the updater. See [automatic updates](docs/automatic-updates.md).
+- **Updates require published update packages.** Source includes update checks and signed update support. Signed update packages are included in v0.0.9; server upgrades also need the optional Linux amd64 host updater. Users of v0.0.1 must install v0.0.2 manually once to get the updater. See [automatic updates](docs/automatic-updates.md).
 - **Platform coverage is explicit.** Desktop targets macOS arm64 / x64 and Windows x64. Linux native desktop and Windows arm64 are outside the current supported scope. See the [platform matrix](docs/supported-platforms.md) for tested environments and remaining checks.
 
 ## Technology

@@ -1,12 +1,12 @@
 # V2 候选交付、更新与回退
 
-当前包版本为 `0.0.8`，API 主版本为 `1`，数据库为 `0004_retention`。版本号不代表完成了全部 V2 阶段：P0–P4 已有阶段验证，P5 远程查看/管理可用，真实远程切换仍关闭。P6 的验证结果见 [报告](plans/p6-verification.md)，平台范围见 [支持表](supported-platforms.md)。
+当前包版本为 `0.0.9`，API 主版本为 `1`，数据库为 `0004_retention`。版本号不代表完成了全部 V2 阶段：P0–P4 已有阶段验证，P5 远程查看/管理可用，真实远程切换仍关闭。P6 的验证结果见 [报告](plans/p6-verification.md)，平台范围见 [支持表](supported-platforms.md)。
 
 ## 候选产物与来源
 
 常规正式发版现在采用[固定发布流程](release-automation.md)的 `release.yml`，集中完成测试、一次构建、签名与发布。下面的 P6 流程保留为手动候选交付和历史操作参考，不再随 `main` 推送自动构建所有平台。
 
-`v0.0.8` 的变更与升级说明见[本次版本归档](archive/v0.0.8.md)，旧版附件保留在 [v0.0.7 归档](archive/v0.0.7.md)。P6 工作流可手动构建交付文件，P5 可单独验证三平台页面流程；手动交付时，维护者下载并验证本次提交的全部产物后，将其连同源码 ZIP/tar.gz、验证报告和总 SHA-256 发布至对应 GitHub Release。此步骤不改变桌面产物的未签名状态。
+`v0.0.9` 的变更与升级说明见[本次版本归档](archive/v0.0.9.md)，旧版附件保留在 [v0.0.8 归档](archive/v0.0.8.md)。P6 工作流可手动构建交付文件，P5 可单独验证三平台页面流程；手动交付时，维护者下载并验证本次提交的全部产物后，将其连同源码 ZIP/tar.gz、验证报告和总 SHA-256 发布至对应 GitHub Release。此步骤不改变桌面产物的未签名状态。
 
 [P6 工作流](../.github/workflows/p6-release.yml) 从干净提交构建包含 Web 的 wheel、Linux amd64 镜像归档、macOS arm64/x64 DMG 和 Windows x64 NSIS。它只上传 CI artifact，不推送镜像、不创建 Release、不访问签名密钥。桌面候选不具有发行者签名/公证，不等同于正式安装发行。
 
@@ -34,7 +34,7 @@ uv run --frozen python dev/build-web.py
 uv build --wheel --out-dir output/p6/wheel
 uv run --frozen python dev/release.py check
 uv run --frozen python dev/release.py manifest --target web-python \
-  --artifact output/p6/wheel/cursor_dashboard-0.0.8-py3-none-any.whl \
+  --artifact output/p6/wheel/cursor_dashboard-0.0.9-py3-none-any.whl \
   --output output/p6/web-python
 python3 dev/release.py verify output/p6/web-python
 ```

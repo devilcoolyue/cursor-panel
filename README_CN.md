@@ -40,7 +40,7 @@
 - **凭证加密保存。** 账号凭证加密落盘，桌面密钥保存在系统凭证库；使用加密归档迁移账号或恢复原密钥。
 - **界面由你决定。** 六种皮肤、独立明暗模式、自定义卡片内容、可折叠侧栏与响应式 Web 布局，内置新手指引帮助上手。
 
-本文介绍当前 V2 预览源码。最新可下载版本为 [v0.0.8](https://github.com/devilcoolyue/cursor-panel/releases/tag/v0.0.8)，具体发布内容见[版本归档](docs/archive/v0.0.8.md)；截图使用模拟预览数据。
+本文介绍当前 V2 预览源码。最新可下载版本为 [v0.0.9](https://github.com/devilcoolyue/cursor-panel/releases/tag/v0.0.9)，具体发布内容见[版本归档](docs/archive/v0.0.9.md)；截图使用模拟预览数据。
 
 ## 选择适合你的使用方式
 
@@ -57,13 +57,13 @@
 
 ### 独立客户端：个人使用
 
-从 **[v0.0.8 Releases](https://github.com/devilcoolyue/cursor-panel/releases/tag/v0.0.8)** 下载对应平台的安装包：
+从 **[v0.0.9 Releases](https://github.com/devilcoolyue/cursor-panel/releases/tag/v0.0.9)** 下载对应平台的安装包：
 
 | 平台 | 下载 |
 | --- | --- |
-| macOS · Apple Silicon | [arm64 版 DMG](https://github.com/devilcoolyue/cursor-panel/releases/download/v0.0.8/Cursor.Panel_0.0.8_aarch64.dmg) |
-| macOS · Intel | [x64 版 DMG](https://github.com/devilcoolyue/cursor-panel/releases/download/v0.0.8/Cursor.Panel_0.0.8_x64.dmg) |
-| Windows · x64 | [x64 版安装程序](https://github.com/devilcoolyue/cursor-panel/releases/download/v0.0.8/Cursor.Panel_0.0.8_x64-setup.exe) |
+| macOS · Apple Silicon | [arm64 版 DMG](https://github.com/devilcoolyue/cursor-panel/releases/download/v0.0.9/Cursor.Panel_0.0.9_aarch64.dmg) |
+| macOS · Intel | [x64 版 DMG](https://github.com/devilcoolyue/cursor-panel/releases/download/v0.0.9/Cursor.Panel_0.0.9_x64.dmg) |
+| Windows · x64 | [x64 版安装程序](https://github.com/devilcoolyue/cursor-panel/releases/download/v0.0.9/Cursor.Panel_0.0.9_x64-setup.exe) |
 
 1. 安装并打开 Cursor Panel，自动创建本地用户与个人空间，无需安装 Python、Node.js 或部署服务端。
 2. 点击「添加账号」，使用 Cursor 网页会话材料完成授权，支持的输入方式见[账号使用指南](docs/user-guide.md#accounts)。
@@ -176,7 +176,7 @@ uv run --frozen cursor-remote --server https://panel.example.com --login owner@e
 - **额度是快照数据。** 刷新失败保留最后成功结果与时间。百分比沿用 Cursor 返回口径，美元上限可能由数据推算；接口为非公开接口，不能将结果视为官方账单或兼容性承诺。
 - **刷新方式取决于入口。** 本地客户端启用托盘模式后可在后台定期刷新；V2 服务端当前采用手工刷新与按需查询，尚无周期额度调度。
 - **远程桌面切换仍关闭。** 已支持远程查看、管理与设备登录；真实 Cursor 续期及多设备共享会话仍待验证，模拟测试不等于这些能力已获实测支持。
-- **自动升级需要配套发布产物。** 源码已接入更新检查与签名更新能力；v0.0.8 提供匹配的签名更新包，服务端还需配置可选的 Linux amd64 宿主机更新服务。v0.0.1 用户需先手动安装一次 v0.0.2，以获得更新器。详见[自动升级](docs/automatic-updates.md)。
+- **自动升级需要配套发布产物。** 源码已接入更新检查与签名更新能力；v0.0.9 提供匹配的签名更新包，服务端还需配置可选的 Linux amd64 宿主机更新服务。v0.0.1 用户需先手动安装一次 v0.0.2，以获得更新器。详见[自动升级](docs/automatic-updates.md)。
 - **平台范围明确。** 客户端面向 macOS arm64 / x64 与 Windows x64；Linux 原生桌面、Windows arm64 暂不在支持范围内。已验证环境与待验项目见[支持平台表](docs/supported-platforms.md)。
 
 ## 技术栈

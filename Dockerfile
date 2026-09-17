@@ -15,7 +15,7 @@ COPY --from=web /build/frontend/dist ./cursor_dashboard/web_v2
 RUN UV_PROJECT_ENVIRONMENT=/opt/venv uv sync --frozen --no-dev --no-editable --no-cache
 
 FROM python:3.12-slim-bookworm
-ARG APP_VERSION=0.0.8
+ARG APP_VERSION=0.0.9
 ARG SOURCE_REVISION=unrecorded
 ARG BUILD_DATE=unrecorded
 LABEL org.opencontainers.image.title="Cursor Panel" \

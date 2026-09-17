@@ -1,6 +1,6 @@
 [project]
 name = "cursor-dashboard"
-version = "0.0.8"
+version = "0.0.9"
 description = "查询多个 Cursor 账号的订阅套餐和额度余量（Web 面板 + 命令行）"
 readme = "README.md"
 license = "MIT"

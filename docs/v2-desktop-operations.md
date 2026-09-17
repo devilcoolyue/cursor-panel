@@ -1,6 +1,6 @@
 # V2 独立桌面
 
-P4 桌面使用本机数据库与系统凭证库，不需要先部署 Cursor Panel 服务端。安装产物、平台实测及已知边界见 [P4 验证报告](plans/p4-verification.md)。当前版本为 `0.0.8`，P5 远程连接已接入，使用与限制见 [连接实例说明](v2-connected-operations.md)；真实远程切换与正式签名发行尚未完成。候选包校验、手动更新/回退和签名方案见 [发行运维](v2-release-operations.md)，最新平台边界见 [支持表](supported-platforms.md)。
+P4 桌面使用本机数据库与系统凭证库，不需要先部署 Cursor Panel 服务端。安装产物、平台实测及已知边界见 [P4 验证报告](plans/p4-verification.md)。当前版本为 `0.0.9`，P5 远程连接已接入，使用与限制见 [连接实例说明](v2-connected-operations.md)；真实远程切换与正式签名发行尚未完成。候选包校验、手动更新/回退和签名方案见 [发行运维](v2-release-operations.md)，最新平台边界见 [支持表](supported-platforms.md)。
 
 ## 本地使用
 
