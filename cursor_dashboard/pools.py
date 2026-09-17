@@ -16,6 +16,8 @@ from statistics import median
 _observed: dict[str, dict[str, dict]] = {}
 _lock = threading.RLock()
 _SLOTS = ("cursor_models", "other_models", "overall")
+# A bounded heuristic for exhausted accounts, not a provider guarantee about overshoot.
+EXHAUSTED_SPEND_TOLERANCE = .01
 
 
 def _plan_key(plan: dict | None) -> str:
@@ -48,7 +50,7 @@ def resolve(plan: dict | None) -> tuple[float | None, float | None, float | None
     key = _plan_key(plan)
     with _lock:
         seen = list(_observed.get(key, {}).values())
-    return _peer_limits({"plan": plan}, seen)
+    return _peer_limits({"plan": plan}, seen)[0]
 
 
 def fill(data: dict | None) -> dict | None:
@@ -60,7 +62,8 @@ def fill(data: dict | None) -> dict | None:
 
 def fill_visible(data: dict | None, visible: list[dict]) -> dict | None:
     """Match this account against the supplied quota observations."""
-    return _fill(data, _peer_limits(data, visible))
+    limits, source = _peer_limits(data, visible)
+    return _fill(data, limits, source=source)
 
 
 def _close(left, right):
@@ -112,9 +115,31 @@ def _estimate(values, *, unanimous=False):
     return None
 
 
+def _exhausted_candidates(data, observations):
+    """Use a unique observed capacity close to final spend only as an explicit estimate.
+
+    Capped percentages are lower bounds on usage. Never divide by them or turn final
+    spend into a new capacity, and never persist this peer-based estimate as history.
+    """
+    quota = (data or {}).get("quota") or {}
+    if any(_valid_limit((quota.get(key) or {}).get("used_pct")) != 100 for key in _SLOTS):
+        return None
+    on_demand = (data or {}).get("on_demand") or {}
+    if on_demand.get("enabled") is not False or on_demand.get("used_usd") != 0:
+        return None
+    spend = _valid_limit(((data or {}).get("spend_usd") or {}).get("total"))
+    if spend is None or _own_limits(data)[2] is not None:
+        return None
+    near = [limits for limits in observations if all(value is not None for value in limits)
+            and -.02 <= spend - limits[2] <= max(.02, limits[2] * EXHAUSTED_SPEND_TOLERANCE)]
+    if not near or _estimate([limits[2] for limits in near], unanimous=True) is None:
+        return None
+    return near
+
+
 def _peer_limits(data, visible):
     key = _plan_key((data or {}).get("plan"))
-    values = [[] for _ in _SLOTS]
+    observations = []
     known_total = _own_limits(data)[2]
     for item in visible:
         if not key or not _same_plan(data, item) or not _overlapping_cycles(data, item):
@@ -125,13 +150,18 @@ def _peer_limits(data, visible):
         if known_total is not None and limits[2] is None:
             # An unanchored model limit cannot establish a matching capacity.
             continue
+        observations.append(limits)
+    exhausted = _exhausted_candidates(data, observations)
+    source = 'exhaustion' if exhausted else 'plan'
+    values = [[] for _ in _SLOTS]
+    for limits in exhausted or observations:
         for column, value in zip(values, limits):
             if value is not None:
                 column.append(value)
     # Without a known total, a majority of one capacity does not identify this account's
     # capacity. Only slots shared by every observed capacity remain usable.
     mixed_totals = bool(values[2]) and _estimate(values[2], unanimous=True) is None
-    return tuple(_estimate(column, unanimous=mixed_totals) for column in values)
+    return tuple(_estimate(column, unanimous=mixed_totals) for column in values), source
 
 
 def _valid_limit(value):
@@ -141,7 +171,7 @@ def _valid_limit(value):
 def _own_limit(slot):
     """A peer-derived estimate must never become a new observation or persistent own history."""
     value = slot.get("limit_usd")
-    if slot.get("limit_source") in {"plan", "reference"} or (slot.get("limit_inferred") and slot.get("limit_source") != "history"):
+    if slot.get("limit_source") in {"plan", "reference", "exhaustion"} or (slot.get("limit_inferred") and slot.get("limit_source") != "history"):
         return None
     return _valid_limit(value)
 
