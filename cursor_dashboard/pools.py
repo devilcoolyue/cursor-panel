@@ -1,22 +1,22 @@
-"""用同套餐的可解观测补齐缺失额度上限，仅作估算。
+"""用本账期历史及容量相符的同套餐观测补齐上限，不硬编码套餐额度。
 
-按 (套餐, 账号) 保留最近一次完整观测，各档取中位数，不硬编码额度。
-假设同名套餐容量相同；目前没有观测 TTL，也不随删除账号或换套餐清理旧项。
-有效观测可能滞后，不能将补齐结果视为远端保证的额度。
+同名套餐可能同时存在不同容量；已知上限是筛选条件，未知容量有歧义时留空。
+跨账号补齐仍仅为估算，不能视为远端保证的额度。
 """
 
 from __future__ import annotations
 
 import threading
+from copy import deepcopy
 from datetime import datetime
 from math import isfinite
 from statistics import median
 
 from .domain.core import Conflict
 
-# plan -> ident -> (cursor_models 池, other_models 池, 综合池)，单位美元
-_observed: dict[str, dict[str, tuple[float, float, float]]] = {}
-_lock = threading.Lock()
+# Legacy only. V2 supplies the authorized query's observations directly.
+_observed: dict[str, dict[str, dict]] = {}
+_lock = threading.RLock()
 _SLOTS = ("cursor_models", "other_models", "overall")
 
 
@@ -27,50 +27,113 @@ def _plan_key(plan: dict | None) -> str:
 
 
 def observe(ident: str, data: dict | None) -> None:
-    """账号刷新成功后登记一次。三档都解出来了才算数——缺档的解本身就不可信。"""
-    quota = (data or {}).get("quota") or {}
-    limits = tuple(
-        (quota.get(key) or {}).get("limit_usd")
-        for key in ("cursor_models", "other_models", "overall")
-    )
-    if any(v is None for v in limits):
-        return
+    """只保留账号当前观测；换套餐、换账期或无解时也清除旧观测。"""
     key = _plan_key((data or {}).get("plan"))
-    if not key:
-        return
     with _lock:
-        _observed.setdefault(key, {})[ident] = limits
+        forget(ident)
+        if key and any(value is not None for value in _own_limits(data)):
+            _observed.setdefault(key, {})[ident] = deepcopy({
+                field: data.get(field) for field in ("plan", "cycle", "quota")
+            })
+
+
+def forget(ident: str) -> None:
+    with _lock:
+        for key, rows in list(_observed.items()):
+            rows.pop(ident, None)
+            if not rows:
+                del _observed[key]
 
 
 def resolve(plan: dict | None) -> tuple[float | None, float | None, float | None]:
-    """这个套餐的额度池。没有任何账号解出来过就是三个 None。"""
+    """仅返回此套餐中无容量歧义的上限；实际展示还须匹配本账号。"""
     key = _plan_key(plan)
     with _lock:
         seen = list(_observed.get(key, {}).values())
-    if not seen:
-        return (None, None, None)
-    return tuple(round(median(values), 2) for values in zip(*seen))
+    return _peer_limits({"plan": plan}, seen)
 
 
 def fill(data: dict | None) -> dict | None:
-    return _fill(data, resolve((data or {}).get("plan")))
+    key = _plan_key((data or {}).get("plan"))
+    with _lock:
+        seen = list(_observed.get(key, {}).values())
+    return fill_visible(data, seen)
 
 
 def fill_visible(data: dict | None, visible: list[dict]) -> dict | None:
     """V2 derives observations only from this authorized query, with no global pool state."""
+    return _fill(data, _peer_limits(data, visible))
+
+
+def _close(left, right):
+    # Allow cent rounding and small estimation noise, not different quota tiers.
+    return abs(left - right) <= max(.02, max(left, right) * .001)
+
+
+def _own_limits(data):
+    return tuple(_own_limit(((data or {}).get("quota") or {}).get(slot) or {}) for slot in _SLOTS)
+
+
+def _compatible(data, limits):
+    known = tuple(_valid_limit((((data or {}).get("quota") or {}).get(slot) or {}).get("limit_usd"))
+                  for slot in _SLOTS)
+    return all(old is None or new is None or _close(old, new) for old, new in zip(known, limits))
+
+
+def _coherent(limits):
+    return any(value is None for value in limits) or _close(limits[0] + limits[1], limits[2])
+
+
+def _same_plan(data, other):
+    plan, peer = (data or {}).get("plan") or {}, (other or {}).get("plan") or {}
+    return bool(_plan_key(plan)) and _plan_key(plan) == _plan_key(peer) and all(
+        plan.get(key) == peer.get(key) for key in ("included_usd", "price", "membership_type", "unlimited")
+    )
+
+
+def _overlapping_cycles(data, other):
+    cycle, peer = (data or {}).get("cycle") or {}, (other or {}).get("cycle") or {}
+    if not cycle:
+        return True
+    start, peer_start = _cycle_date(cycle.get("start")), _cycle_date(peer.get("start"))
+    if start is None or peer_start is None:
+        return False
+    end, peer_end = _cycle_date(cycle.get("reset_at")), _cycle_date(peer.get("reset_at"))
+    if end is None or peer_end is None:
+        return start == peer_start
+    return start < end and peer_start < peer_end and max(start, peer_start) < min(end, peer_end)
+
+
+def _estimate(values, *, unanimous=False):
+    if not values:
+        return None
+    middle = median(values)
+    support = [value for value in values if _close(value, middle)]
+    if len(support) == len(values) or (not unanimous and len(support) > len(values) / 2):
+        return round(median(support), 2)
+    return None
+
+
+def _peer_limits(data, visible):
     key = _plan_key((data or {}).get("plan"))
     values = [[] for _ in _SLOTS]
+    known_total = _own_limits(data)[2]
     for item in visible:
-        if not key or _plan_key(item.get("plan")) != key:
+        if not key or not _same_plan(data, item) or not _overlapping_cycles(data, item):
             continue
-        limits = tuple(_own_limit((item.get("quota") or {}).get(slot) or {}) for slot in _SLOTS)
-        # A capped model bucket can still leave a valid overall observation.
-        # Use each known slot independently instead of discarding that history.
+        limits = _own_limits(item)
+        if not _coherent(limits) or not _compatible(data, limits):
+            continue
+        if known_total is not None and limits[2] is None:
+            # An unanchored model limit cannot establish a matching capacity.
+            continue
         for column, value in zip(values, limits):
             if value is not None:
                 column.append(value)
-    limits = tuple(round(median(column), 2) if column else None for column in values)
-    return _fill(data, limits)
+    # Without a known total, a majority of one capacity does not identify this account's
+    # capacity. Only slots shared by every observed capacity remain usable.
+    mixed_totals = bool(values[2]) and _estimate(values[2], unanimous=True) is None
+    return tuple(_estimate(column, unanimous=mixed_totals) for column in values)
 
 
 def _valid_limit(value):
@@ -96,8 +159,8 @@ def _cycle_date(value):
 def retain_own_limits(data: dict | None, previous: dict | None) -> dict | None:
     """Keep solved limits and explicit references within the same account, plan and cycle.
 
-    Called inside the snapshot write transaction. No peer observations are persisted, so changing
-    grants or deleting a source account immediately changes the authorized query's estimates.
+    Called before saving a successful snapshot (inside the V2 write transaction). No peer
+    observations are persisted, so grant changes or source deletion affect estimates immediately.
     """
     if not data or not previous:
         return data
@@ -116,10 +179,10 @@ def retain_own_limits(data: dict | None, previous: dict | None) -> dict | None:
         if end is None or end != old_end or end <= start:
             return data
     limits = tuple(_own_limit((previous.get("quota") or {}).get(slot) or {}) for slot in _SLOTS)
-    result = _fill(data, limits, source="history")
+    result = _fill(data, limits, source="history") if _compatible(data, limits) else data
     references = tuple(_valid_limit(slot.get("limit_usd")) if slot.get("limit_source") == "reference" else None
                        for slot in ((previous.get("quota") or {}).get(key) or {} for key in _SLOTS))
-    return _fill(result, references, source="reference")
+    return _fill(result, references, source="reference") if _compatible(result, references) else result
 
 
 def set_reference_limits(data: dict | None, reference: dict) -> dict:
@@ -162,6 +225,11 @@ def _fill(data: dict | None, limits, *, source="plan") -> dict | None:
         return data
 
     if all(v is None for v in limits):
+        return data
+
+    combined = tuple((quota.get(key) or {}).get("limit_usd") or limit
+                     for key, limit in zip(_SLOTS, limits))
+    if not _coherent(combined):
         return data
 
     patched = dict(quota)

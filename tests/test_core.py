@@ -39,7 +39,8 @@ def token(marker="base", subject="user_test", expiry=None):
 
 def data(limit=None, cycle="2026-09-01T00:00:00+00:00"):
     return {"plan": {"name": "Pro"}, "cycle": {"start": cycle}, "quota": {
-        name: {"limit_usd": limit, "used_pct": 25, "remaining_pct": 75}
+        name: {"limit_usd": (limit if name == "overall" else limit / 2) if limit is not None else None,
+               "used_pct": 25, "remaining_pct": 75}
         for name in ("cursor_models", "other_models", "overall")}}
 
 

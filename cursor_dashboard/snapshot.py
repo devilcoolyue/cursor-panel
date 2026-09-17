@@ -50,6 +50,7 @@ def load() -> int:
     with _lock:
         _snapshots = loaded
     # 重启后立刻把套餐池表建起来，否则用满的账号要等到同套餐里有人刷新成功才显示上限
+    pools.reset()
     for ident, snap in loaded.items():
         pools.observe(ident, snap.get("data"))
     return len(loaded)
@@ -82,6 +83,7 @@ def _store(ident: str, snap: dict) -> dict:
 
 def record_success(ident: str, cookie: str, data: dict) -> dict:
     now = int(time.time())
+    data = pools.retain_own_limits(data, get(ident, cookie)["data"])
     pools.observe(ident, data)
     return _store(ident, {
         "fingerprint": fingerprint(cookie),
@@ -116,6 +118,7 @@ def drop(ident: str) -> None:
     with _lock:
         _snapshots.pop(ident, None)
     _inflight.pop(ident, None)
+    pools.forget(ident)
     try:
         delete_snapshot(ident)
     except AccountsError:
@@ -137,7 +140,7 @@ def _iso(ts: int) -> str | None:
 def view(acc: dict, ident: str, snap: dict | None = None) -> dict:
     """把账号信息和快照拼成卡片要的结构。永远不回传 cookie。"""
     snap = snap if snap is not None else get(ident, acc["cookie"])
-    # 用满的账号自己解不出上限（百分比被截在 100），从同套餐里抄一份，见 pools 模块
+    # 只用与本账号已知容量相符的同套餐观测补齐；存在歧义的上限留空。
     data = pools.fill(snap["data"])
     error = snap["error"]
     expired = bool(
