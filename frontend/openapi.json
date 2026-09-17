@@ -3524,7 +3524,8 @@
                 "enum": [
                   "history",
                   "plan",
-                  "reference"
+                  "reference",
+                  "exhaustion"
                 ]
               },
               {

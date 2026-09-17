@@ -260,12 +260,19 @@ function grokHint() {
   </span></span></span>`;
 }
 
-// 额度上限是服务端从官方百分比反解出来的（见 usage.pool_limits），解不出就不显示，
-// 绝不拿 included_usd（$20）顶替——那是订阅价，不是这条额度的池子
+const quotaLimitText = q => `${q.limit_source === 'exhaustion' ? '≈' : ''}${shortMoney(q.limit_usd)}`;
+function quotaLimitHint(q) {
+  if (q.limit_source === 'exhaustion') return '已耗尽且未使用按量付费，消费接近此额度档位（超额不超过 1%）；参考同套餐账号估算，并非官方确认上限。';
+  if (q.limit_source === 'history') return '参考本账号同一账期此前推算的上限。';
+  if (q.limit_inferred) return '参考账期重叠、容量相符的同套餐账号估算的上限。';
+  return '根据本账号消费金额和用量比例推算的上限。';
+}
+
+// 本次反解、同账期历史及同套餐参考上限；耗尽消费辅助估算须明确标出近似值。
 function bar(name, q, id, group) {
   const r = q.remaining_pct;
   const limit = !shows('limit') || q.limit_usd == null ? ''
-    : `<span class="q-limit">${esc(shortMoney(q.limit_usd))}</span>`;
+    : `<span class="q-limit" title="${esc(quotaLimitHint(q))}">${esc(quotaLimitText(q))}</span>`;
   return `<button type="button" class="q-row tip left" data-detail="${esc(id)}"
       data-group="${esc(group)}" data-tip="查看详情 · 本周期用了哪些模型">
     <span class="q-name">${name}${limit}</span>
@@ -285,7 +292,7 @@ function spendValue(overall, spend) {
     ? `<span style="color:var(--bad)">${money(spend.total)}</span>`
     : money(spend.total);
   return overall.limit_usd == null ? amount
-    : `${amount} / ${esc(shortMoney(overall.limit_usd))}`;
+    : `${amount} / ${esc(quotaLimitText(overall))}`;
 }
 
 // 分母用综合额度池，跟上面那条「综合 剩 x%」同口径。订阅价 $20 是另一回事——
@@ -295,7 +302,7 @@ function spendTip(overall, plan, spend) {
   if (overall.limit_usd == null) return included;
   const over = overspent(overall, spend)
     ? `已超出上限 ${money(spend.total - overall.limit_usd)}。` : '';
-  return `${over}${included}，超出的走 Cursor 赠送额度。分母 ${shortMoney(overall.limit_usd)} 是本周期两类模型额度的合计上限。`;
+  return `${over}${included}，超出的走 Cursor 赠送额度。分母 ${quotaLimitText(overall)} 是本周期两类模型额度的合计上限。${quotaLimitHint(overall)}`;
 }
 
 // 部门 + 邮箱那一行。两个都关掉时连容器一起省掉，免得留一条 2px 的空行
@@ -878,7 +885,7 @@ function detailRows(models) {
 
 function detailGroup(group, quota) {
   const limit = quota && quota.limit_usd != null
-    ? ` / 上限 ${esc(shortMoney(quota.limit_usd))}` : '';
+    ? ` / 上限 ${esc(quotaLimitText(quota))}` : '';
   return `<div class="detail-group">
     <div class="detail-group-head">
       <span class="detail-group-name">${esc(group.name)}</span>

@@ -305,5 +305,72 @@ class CapacityMatchingTest(unittest.TestCase):
         self.assertEqual(pools.fill_visible(data, [invalid]), data)
 
 
+class ExhaustedCapacityTest(unittest.TestCase):
+    def setUp(self):
+        pools.reset()
+        self.peers = [capacity_snapshot(other=45), capacity_snapshot()]
+        self.data = period_snapshot(49615, 100, 100, 100)
+        self.data['on_demand'] = {'enabled': False, 'used_usd': 0}
+
+    def test_exhausted_spend_identifies_a_unique_observed_capacity(self):
+        for spend, expected in [(496.15, (450, 45, 495)), (497.57, (450, 45, 495)),
+                                (473.2, (450, 22.5, 472.5))]:
+            with self.subTest(spend=spend):
+                self.data['spend_usd']['total'] = spend
+                original = deepcopy(self.data)
+                for i, peer in enumerate(self.peers):
+                    pools.observe(str(i), peer)
+                for filled in (pools.fill(self.data), pools.fill_visible(self.data, self.peers)):
+                    self.assertEqual(tuple(filled['quota'][key]['limit_usd'] for key in pools._SLOTS), expected)
+                    for slot in filled['quota'].values():
+                        self.assertEqual(slot['limit_source'], 'exhaustion')
+                        self.assertEqual(slot['remaining_pct'], 0)
+                self.assertEqual(self.data, original)
+
+    def test_capacity_is_observed_not_hardcoded_or_final_spend(self):
+        self.data['spend_usd']['total'] = 881.25
+        filled = pools.fill_visible(self.data, [capacity_snapshot(800, 40), capacity_snapshot(800, 80)])
+        self.assertEqual(filled['quota']['overall']['limit_usd'], 880)
+        self.assertEqual(filled['quota']['other_models']['limit_usd'], 80)
+
+    def test_zero_invalid_or_excessive_spend_does_not_identify_a_capacity(self):
+        for spend in (0, None, -1, True, '496.15', float('nan'), float('inf'), 490, 510):
+            with self.subTest(spend=spend):
+                self.data['spend_usd']['total'] = spend
+                filled = pools.fill_visible(self.data, self.peers)
+                self.assertIsNone(filled['quota']['overall']['limit_usd'])
+                self.assertIsNone(filled['quota']['other_models']['limit_usd'])
+
+    def test_partial_usage_or_on_demand_spend_cannot_use_exhaustion_matching(self):
+        for demand in ({}, {'enabled': True, 'used_usd': 0}, {'enabled': False, 'used_usd': 1}):
+            data = deepcopy(self.data)
+            data['on_demand'] = demand
+            self.assertIsNone(pools.fill_visible(data, self.peers)['quota']['overall']['limit_usd'])
+        for key in pools._SLOTS:
+            data = deepcopy(self.data)
+            data['quota'][key]['used_pct'] = 99
+            self.assertIsNone(pools.fill_visible(data, self.peers)['quota']['overall']['limit_usd'])
+
+    def test_multiple_nearby_capacities_remain_ambiguous(self):
+        data = deepcopy(self.data)
+        data['spend_usd']['total'] = 497
+        filled = pools.fill_visible(data, [capacity_snapshot(other=45), capacity_snapshot(other=46)])
+        self.assertIsNone(filled['quota']['other_models']['limit_usd'])
+        self.assertIsNone(filled['quota']['overall']['limit_usd'])
+
+    def test_exhaustion_estimates_never_become_own_history_or_peer_evidence(self):
+        estimated = pools.fill_visible(self.data, self.peers)
+        self.assertIsNone(pools.retain_own_limits(self.data, estimated)['quota']['overall']['limit_usd'])
+        self.assertIsNone(pools.fill_visible(self.data, [estimated])['quota']['overall']['limit_usd'])
+        pools.observe('estimated', estimated)
+        self.assertEqual(pools.snapshot_state(), {})
+
+    def test_same_cycle_history_precedes_spend_matching(self):
+        retained = pools.retain_own_limits(self.data, self.peers[0])
+        filled = pools.fill_visible(retained, self.peers)
+        self.assertEqual(filled['quota']['overall']['limit_source'], 'history')
+        self.assertEqual(filled['quota']['overall']['limit_usd'], 495)
+
+
 if __name__ == "__main__":
     unittest.main()

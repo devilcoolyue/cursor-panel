@@ -1291,7 +1291,7 @@ export interface components {
              */
             limit_inferred: boolean;
             /** Limit Source */
-            limit_source?: ("history" | "plan" | "reference") | null;
+            limit_source?: ("history" | "plan" | "reference" | "exhaustion") | null;
         } & {
             [key: string]: unknown;
         };

@@ -176,7 +176,7 @@ class QuotaSlot(UsageFields):
     used_usd: float | None = None
     remaining_usd: float | None = None
     limit_inferred: bool = False
-    limit_source: Literal['history', 'plan', 'reference'] | None = None
+    limit_source: Literal['history', 'plan', 'reference', 'exhaustion'] | None = None
 
 
 class Plan(UsageFields):
