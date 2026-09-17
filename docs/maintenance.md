@@ -12,7 +12,7 @@
 | [switch_links.py](../cursor_dashboard/switch_links.py) | 有界内存短链接、原子单次领取和下载命令包装 |
 | [scripts/](../cursor_dashboard/scripts/) | macOS/PowerShell 包装脚本与公共 SQLite 切换引擎 |
 | [usage.py](../cursor_dashboard/usage.py) | 桌面响应适配、额度池反解、卡片与模型明细组装；另保留旧 `collect()` 网络入口 |
-| [pools.py](../cursor_dashboard/pools.py) | 按套餐登记可反解的观测，以中位数补齐缺失上限 |
+| [pools.py](../cursor_dashboard/pools.py) | 保留同账期历史，匹配套餐、账期与已知容量后补齐缺失上限 |
 | [snapshot.py](../cursor_dashboard/snapshot.py) | 进程内快照、同账号刷新锁、最后成功数据及失败状态 |
 | [scheduler.py](../cursor_dashboard/scheduler.py) | 逐账号后台刷新、空闲降速、限流退避 |
 | [store.py](../cursor_dashboard/store.py) | SQLite 事务、账号/快照持久化、一次性 JSON 迁移、续期租约和条件更新 |
@@ -63,8 +63,10 @@
 
 - `assemble_desktop()` 将桌面周期、套餐和按量付费字段适配到 `assemble()`。主额度按上游已用百分比计算剩余，`remain()` 下限为 0；部分缺失字段按 0 处理，不能保证自动发现所有上游格式变化。
 - 上限反解使用 `T = spend_usd / (total_pct / 100)`、`A/B = (api_pct - total_pct) / (total_pct - auto_pct)`。总百分比为 0 或达到 99.99% 时全部留空；分档触顶或百分比差小于 0.05 个百分点时只保留可解的总池。不要移除保护或写死额度。
-- `pools.observe()` 只登记三档均可解的观测，按套餐名（回退 membership type）和账号保存；`fill()` 只补缺失档位并标记 `limit_inferred`，不修改原快照。CLI 不走此补齐步骤。
-- 同套餐补齐是估算，假设同名套餐容量相同。观测没有 TTL，删除账号或换套餐没有对应清理，不能保证套餐变动后立即收敛到新额度；`plan_pools` 是观测计数而非实时账号数。
+- 上限优先使用本次反解，其次保留同账号、同套餐及同账期的历史；本次已知容量与历史冲突时放弃历史。在成功快照写入时保留历史，跨账号估算不写回快照，避免反复传播。
+- 同名套餐可能同时有多种容量。补齐先核对套餐信息、重叠账期与本账号已知上限，例如综合池 `$472.50` 不会借用综合池 `$495` 的分池上限。允许至多 0.1%（最低 2 美分）的估算误差；同容量内采用有过半观测支持的中位数，补齐后的两分池之和须与综合池相符。缺少综合上限且观测有多种容量时，只补齐各容量共同认可的档位，其余留空，不按多数账号猜测，也不生成 `$33.75` 一类混合容量。
+- `pools.observe()` 按账号保存最近一次有效观测，部分解只贡献已知档位；每次成功刷新替换旧观测，删除账号清理观测，启动重建。观测无独立 TTL，仍受快照新旧程度影响；`plan_pools` 是观测计数。
+- 补齐的档位标记 `limit_inferred` 及 `limit_source`（`history` 或 `plan`），不改变上游百分比。CLI 仅使用当前反解，不走历史或跨账号补齐。美元上限仍为估算。
 - 卡片消费分母为综合估算池 `quota.overall.limit_usd`。`plan.included_usd` 来自套餐包含金额，不等于该池；`notice` 在 CLI 展示，Web 卡片不显示。
 - 明细窗口从快照账单起点到请求时刻；缓存键按账号与 Cookie fingerprint，TTL 默认 60 秒。缺少账单起点返回 409。分类按数值 `tier == 2` 归 Cursor Models，其余归 Other Models；成本用返回的 cents，输入、输出、缓存写、缓存读独立保留，不硬编码模型单价。
 - Grok 用量缺失、`includedLimitZero` 为真或 `hasNonZeroIncludedLimit` 明确为假时整行省略；有效 0 用量显示 100% 剩余，不按套餐名或 `hasAvailableUsage` 过滤。重置时间优先 `nextResetTimestampUtc`，缺失才回退到起点加 7 天。

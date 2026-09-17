@@ -4,7 +4,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from cursor_dashboard import snapshot, store
+from cursor_dashboard import pools, snapshot, store
+from tests.test_pools import capacity_snapshot, period_snapshot
 
 
 class SnapshotTest(unittest.TestCase):
@@ -18,6 +19,7 @@ class SnapshotTest(unittest.TestCase):
         store._initialized.clear()
         snapshot._snapshots.clear()
         snapshot._inflight.clear()
+        pools.reset()
         self.acc = {"label": "张三", "email": "zhang@example.com",
                     "department": "智慧运维", "cookie": "cookie-1"}
 
@@ -27,6 +29,7 @@ class SnapshotTest(unittest.TestCase):
         store._initialized.clear()
         snapshot._snapshots.clear()
         snapshot._inflight.clear()
+        pools.reset()
         self.temp_dir.cleanup()
 
     def data(self, remaining: float = 61.0) -> dict:
@@ -124,6 +127,32 @@ class SnapshotTest(unittest.TestCase):
 
         self.assertEqual(store.load_snapshots(), {})
         self.assertTrue(snapshot.view(self.acc, "zhang@example.com")["pending"])
+
+    def test_own_capacity_survives_exhaustion_and_restart_then_expires_with_the_cycle(self):
+        ident = self.acc['email']
+        snapshot.record_success(ident, 'cookie-1', capacity_snapshot())
+        capped = period_snapshot(3203, 1.7133333333333334, 100, 6.778835978835978)
+        snapshot.record_success(ident, 'cookie-1', capped)
+        snapshot._snapshots.clear()
+        pools.reset()
+        snapshot.load()
+        snapshot.record_success(ident, 'cookie-1', capped)
+        slot = snapshot.get(ident, 'cookie-1')['data']['quota']['other_models']
+        self.assertEqual((slot['limit_usd'], slot['limit_source']), (22.5, 'history'))
+        next_cycle = period_snapshot(0, 0, 0, 0)
+        next_cycle['cycle'] = {'start': '2026-10-16T07:00:00Z', 'reset_at': '2026-11-16T07:00:00Z'}
+        snapshot.record_success(ident, 'cookie-1', next_cycle)
+        self.assertIsNone(snapshot.view(self.acc, ident)['data']['quota']['other_models']['limit_usd'])
+
+    def test_drop_and_reload_remove_observations_for_deleted_accounts(self):
+        ident = self.acc['email']
+        snapshot.record_success(ident, 'cookie-1', capacity_snapshot())
+        self.assertTrue(pools.snapshot_state())
+        snapshot.drop(ident)
+        self.assertEqual(pools.snapshot_state(), {})
+        pools.observe('stale', capacity_snapshot())
+        snapshot.load()
+        self.assertEqual(pools.snapshot_state(), {})
 
 
 if __name__ == "__main__":
