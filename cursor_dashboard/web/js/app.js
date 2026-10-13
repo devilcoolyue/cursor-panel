@@ -49,8 +49,11 @@ const SORT_REMAINING_ASC = 'remaining-asc';
 const SORT_REMAINING_DESC = 'remaining-desc';
 const SORT_RESET_ASC = 'reset-asc';
 const SORT_RESET_DESC = 'reset-desc';
+const SORT_WASTE_DESC = 'waste-desc';
+const SORT_WASTE_ASC = 'waste-asc';
 const SORT_MODES = new Set([
-  SORT_ADDED, SORT_REMAINING_ASC, SORT_REMAINING_DESC, SORT_RESET_ASC, SORT_RESET_DESC
+  SORT_ADDED, SORT_REMAINING_ASC, SORT_REMAINING_DESC, SORT_RESET_ASC, SORT_RESET_DESC,
+  SORT_WASTE_DESC, SORT_WASTE_ASC
 ]);
 const storedDepartment = localStorage.getItem('selectedDepartment');
 let selectedDepartment = storedDepartment === null ? ALL_DEPARTMENTS : storedDepartment;
@@ -134,6 +137,7 @@ const CARD_OPTIONS = [
   { group: '身份区', key: 'limit', label: '额度上限', hint: '每条额度名后面的 $450，服务端反解得出来才有' },
   { group: '信息行', key: 'statTime', label: '最后统计', hint: '这张卡上一次取数成功的时刻' },
   { group: '信息行', key: 'reset', label: '额度刷新', hint: '下次重置的日期时间和剩余时长' },
+  { group: '信息行', key: 'wasteScore', label: '优先消耗分', hint: '剩余百分比 ÷ 剩余天数（至少一天）；5 分内绿色，超过 5 分黄色，10 分起红色，15 分起满格' },
   { group: '信息行', key: 'spend', label: '本周期消费', hint: '已花金额 / 综合额度池上限' },
   { group: '信息行', key: 'onDemand', label: '按量付费', hint: '是否开启以及已用金额' },
   { group: '信息行', key: 'grok', label: 'Grok Bot 周额度', hint: '关掉只是不显示，后台照常请求这个接口' },
@@ -393,6 +397,11 @@ function card(a) {
   if (shows('reset')) {
     meta.push(`<div><span>额度刷新</span><b>${localDateTime(c.reset_at)}${cycleRemaining ? ` · ${cycleRemaining}` : ''}</b></div>`);
   }
+  if (shows('wasteScore')) {
+    meta.push(`<div class="quota-priority${sortMode === SORT_WASTE_DESC || sortMode === SORT_WASTE_ASC ? ' is-active' : ''}">
+      <span class="tip left" tabindex="0" data-tip="${esc(WASTE_SCORE_HINT)}"
+        aria-label="优先消耗分：${esc(WASTE_SCORE_HINT)}">优先消耗分</span>${wasteIndicator(a)}</div>`);
+  }
   if (shows('spend')) {
     meta.push(`<div><span class="tip left" data-tip="${esc(spendTip(q.overall, p, s))}">本周期消费</span>
       <b>${spendValue(q.overall, s)}</b></div>`);
@@ -522,9 +531,64 @@ function resetTime(account) {
   return d ? d.getTime() : null;
 }
 
-function sortedAccounts() {
+// 使用官方综合剩余比例，不混入可能缺失或估算的美元额度。
+// 不足一天按一天，防止临近重置时极少的余额因除数趋零而冲到最前。
+function wasteScore(account, now = Date.now()) {
+  const remaining = overallRemaining(account);
+  const reset = resetTime(account);
+  if (remaining === null || reset === null || reset <= now) return null;
+  return Math.max(0, remaining) / Math.max((reset - now) / 86400000, 1);
+}
+
+const WASTE_SCORE_HINT = [
+  '计算：综合剩余百分比 ÷ 距离重置的天数（按实际时间计算，不足一天按一天）。',
+  '例如：剩余 80%、还有 10 天，得 8 分；分数越高，越应优先使用。',
+  '绿色正常：大于 0 且不超过 5 分，亮 1 格。',
+  '黄色偏高：超过 5 分、低于 10 分，亮 2 格；超过 7.5 分亮 3 格。',
+  '红色高风险：10 分起亮 4 格，15 分起亮满 5 格。',
+  '灰色：额度用尽（0 分）、数据不足或已到重置时间待刷新。',
+].join('\n');
+
+function wasteLevel(score) {
+  if (score === null) return { tone: 'neutral', bars: 0, label: '数据不足' };
+  if (score <= 0) return { tone: 'neutral', bars: 0, label: '已用尽' };
+  if (score <= 5) return { tone: 'normal', bars: 1, label: '正常' };
+  if (score < 10) return { tone: 'warning', bars: score <= 7.5 ? 2 : 3, label: '偏高' };
+  return { tone: 'high', bars: score < 15 ? 4 : 5, label: '高风险' };
+}
+
+function wasteIndicator(account, now = Date.now()) {
+  const score = wasteScore(account, now);
+  const level = wasteLevel(score);
+  const reset = resetTime(account);
+  if (score === null && reset !== null && reset <= now) level.label = '待刷新';
+  // 向下保留一位，避免 9.99 分显示成 10.0 分却仍属于黄色区间。
+  const value = score === null ? '—'
+    : `${score > 0 && score < 0.1 ? '<0.1' : (Math.floor(score * 10) / 10).toFixed(1)} 分`;
+  const bars = Array.from({ length: 5 }, (_, index) =>
+    `<i${index < level.bars ? ' class="is-lit"' : ''}></i>`).join('');
+  return `<span class="waste-indicator ${level.tone} tip right" tabindex="0"
+    data-tip="${esc(WASTE_SCORE_HINT)}" aria-label="${esc(`${level.label}，${value}。${WASTE_SCORE_HINT}`)}">
+    <span class="waste-bars" aria-hidden="true">${bars}</span>
+    <span class="waste-status">${level.label}</span><b class="waste-value">${esc(value)}</b>
+  </span>`;
+}
+
+function sortedAccounts(now = Date.now()) {
   return [...accounts].sort((a, b) => {
     if (sortMode === SORT_ADDED) return accountOrder(a) - accountOrder(b);
+    if (sortMode === SORT_WASTE_DESC || sortMode === SORT_WASTE_ASC) {
+      const aScore = wasteScore(a, now);
+      const bScore = wasteScore(b, now);
+      if (aScore === null && bScore === null) {
+        const pendingOrder = Number(Boolean(a.pending)) - Number(Boolean(b.pending));
+        return pendingOrder || accountOrder(a) - accountOrder(b);
+      }
+      if (aScore === null) return 1;
+      if (bScore === null) return -1;
+      const delta = sortMode === SORT_WASTE_ASC ? aScore - bScore : bScore - aScore;
+      return delta || resetTime(a) - resetTime(b) || accountOrder(a) - accountOrder(b);
+    }
     if (sortMode === SORT_RESET_ASC || sortMode === SORT_RESET_DESC) {
       const aTime = resetTime(a);
       const bTime = resetTime(b);

@@ -530,6 +530,24 @@ button.q-row:hover .q-go, button.q-row:focus-visible .q-go {
 .meta > div > :first-child { flex: none; }
 .meta b { color: var(--fg); font-weight: 500; font-variant-numeric: tabular-nums; min-width: 0; text-align: right; }
 .meta .tip { border-bottom: 1px dotted var(--dimmer); cursor: help; }
+.meta .quota-priority { align-items: center; }
+.meta .quota-priority.is-active > :first-child { color: var(--fg); font-weight: 600; }
+.meta .waste-indicator {
+  --waste-color: var(--dimmer);
+  display: inline-flex; align-items: center; gap: 7px; border-bottom: 0;
+  white-space: nowrap;
+}
+.waste-indicator.normal { --waste-color: var(--ok); }
+.waste-indicator.warning { --waste-color: var(--warn); }
+.waste-indicator.high { --waste-color: var(--bad); }
+.waste-bars { display: inline-flex; align-items: center; gap: 3px; flex: none; }
+.waste-bars i { width: 4px; height: 14px; border-radius: 2px; background: var(--track-bg); }
+.waste-bars i.is-lit { background: var(--waste-color); }
+.waste-status { color: var(--waste-color); font-size: 11px; }
+.meta .waste-value { color: var(--dim); font-size: 11px; font-weight: 400; }
+.quota-priority .tip::after { white-space: pre-line; max-width: min(300px, calc(100vw - 64px)); }
+.quota-priority .tip:focus::after { opacity: 1; visibility: visible; transition: none; }
+.quota-priority .tip:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 /* Grok 那行的提示框里有个可点的下载地址，所以它不能用上面那套 ::after
    ——伪元素塞不进链接，pointer-events: none 也让鼠标够不着。这里单独做成真实元素。
    关键是 .grok-card 自己带 padding-bottom 当桥：标题和提示框之间那 8px 空隙归它
@@ -714,11 +732,12 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 }
 
 .pref-grid {
-  display: grid; grid-template-columns: repeat(2, 1fr); gap: 7px 10px;
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px 10px;
 }
 
 .pref-tile {
   display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  min-width: 0;
   padding: 8px 12px; background: var(--card-hi); border: 1px solid var(--line);
   border-radius: 9px; cursor: pointer; user-select: none;
   transition: background-color .14s ease, border-color .14s ease, box-shadow .14s ease;
@@ -741,7 +760,7 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 }
 .pref-tile-hint {
   font-size: 11px; color: var(--dimmer); line-height: 1.35; margin-top: 1px;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  white-space: normal; overflow-wrap: anywhere;
 }
 .pref-tile.is-active .pref-tile-hint {
   color: var(--dim);
@@ -877,10 +896,9 @@ a { color: var(--accent); }
 }
 @media (max-width: 640px) {
   #prefs-dlg { width: min(480px, calc(100vw - 24px)); padding: 18px 16px; }
-  .pref-grid { grid-template-columns: 1fr; gap: 7px; }
+  .pref-grid { grid-template-columns: minmax(0, 1fr); gap: 7px; }
   .prefs-header { flex-direction: column; align-items: stretch; gap: 10px; }
   .prefs-actions { justify-content: flex-start; }
-  .pref-tile-hint { white-space: normal; }
 }
 @media (max-width: 360px) {
   .meta > div { gap: 6px; font-size: 11px; }
