@@ -21,6 +21,9 @@ from .config import (
 BASE = "https://cursor.com"
 DESKTOP_BASE = "https://api2.cursor.sh"
 COOKIE_NAME = "WorkosCursorSessionToken"
+# cursor.com 的 POST 接口使用双提交 CSRF：Cookie 与请求头必须是同一个值
+CSRF_COOKIE = "csrf-token"
+CSRF_HEADER = "x-csrf-token"
 TIMEOUT = 20
 UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
@@ -108,10 +111,20 @@ class CursorClient:
 
     def me(self):             return self._call("GET",  "/api/auth/me")
 
+    def _csrf_token(self) -> str:
+        """与网页一致：/api/csrf-token 返回 token 并下发同名 Cookie，POST 再把它放进请求头。
+        缺少任一项时上游返回 403 {"error":"Invalid CSRF token"}。"""
+        data = self._call("GET", "/api/csrf-token")
+        token = data.get("token") if isinstance(data, dict) else None
+        if not isinstance(token, str) or not token:
+            raise RuntimeError(f"[{self.label}] Cursor 未返回 CSRF token")
+        self.s.cookies.set(CSRF_COOKIE, token, domain="cursor.com", path="/")
+        return token
+
     def desktop_callback(self, flow: str, challenge: str):
         return self._call("POST", "/api/auth/loginDeepCallbackControl", {
             "uuid": flow, "challenge": challenge,
-        }, read_json=False)
+        }, headers={CSRF_HEADER: self._csrf_token()}, read_json=False)
 
     def desktop_poll(self, flow: str, verifier: str):
         return self._call("GET", "/auth/poll", base=DESKTOP_BASE,

@@ -26,7 +26,7 @@
 
 ## 授权与取数
 
-初次授权流程为：解析 Cookie 格式与到期声明，调用网页 `me` 校验邮箱和 subject，经 `desktop_callback` 和 `desktop_poll` 换取桌面凭证，再调用 `desktop_me` 校验身份。Token 的本地解析不验证签名，身份确认依赖远端接口。新增/重新授权还需完成 6 项桌面额度请求，成功后才提交账号和快照。
+初次授权流程为：解析 Cookie 格式与到期声明，调用网页 `me` 校验邮箱和 subject，经 `desktop_callback` 和 `desktop_poll` 换取桌面凭证，再调用 `desktop_me` 校验身份。`desktop_callback` 在同一 Session 内先取 `/api/csrf-token`，以同值的 `csrf-token` Cookie 和 `x-csrf-token` 头提交；缺少时 cursor.com 返回 403 JSON，会被归为认证错误。Token 的本地解析不验证签名，身份确认依赖远端接口。新增/重新授权还需完成 6 项桌面额度请求，成功后才提交账号和快照。
 
 常规刷新、明细与切换先调用 `ensure_account()`。保存的凭证可用时直接复用；有 RT 时只走桌面续期，无 RT 的旧记录才通过 Cookie 迁移，已经标记撤销的记录直接要求重新授权。
 
