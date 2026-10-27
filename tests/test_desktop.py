@@ -486,13 +486,32 @@ class DesktopClientTest(unittest.TestCase):
     def test_callback_accepts_plain_success_without_sending_verifier(self):
         client = CursorClient('web-cookie')
         self.addCleanup(client.s.close)
+        csrf = requests.Response()
+        csrf.status_code = 200
+        csrf.headers['Content-Type'] = 'application/json'
+        csrf._content = b'{"token": "csrf-value"}'
         response = requests.Response()
         response.status_code = 200
         response._content = b'OK'
-        with patch.object(client.s, 'request', return_value=response) as request:
+        with patch.object(client.s, 'request', side_effect=[csrf, response]) as request:
             client.desktop_callback('flow', 'challenge')
-        self.assertEqual(request.call_args.kwargs['json'], {'uuid': 'flow', 'challenge': 'challenge'})
-        self.assertFalse(request.call_args.kwargs['allow_redirects'])
+        token_call, callback = request.call_args_list
+        self.assertEqual(token_call.args, ('GET', 'https://cursor.com/api/csrf-token'))
+        self.assertEqual(callback.kwargs['json'], {'uuid': 'flow', 'challenge': 'challenge'})
+        self.assertEqual(callback.kwargs['headers'], {'x-csrf-token': 'csrf-value'})
+        self.assertEqual(client.s.cookies.get('csrf-token'), 'csrf-value')
+        self.assertFalse(callback.kwargs['allow_redirects'])
+
+    def test_callback_requires_csrf_token(self):
+        client = CursorClient('web-cookie')
+        self.addCleanup(client.s.close)
+        csrf = requests.Response()
+        csrf.status_code = 200
+        csrf._content = b'{}'
+        with patch.object(client.s, 'request', return_value=csrf) as request:
+            with self.assertRaises(RuntimeError):
+                client.desktop_callback('flow', 'challenge')
+        request.assert_called_once()
 
     def test_poll_and_profile_target_desktop_backend(self):
         client = CursorClient('web-cookie')

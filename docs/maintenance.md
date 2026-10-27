@@ -34,7 +34,7 @@ P3 新 Web 位于 `frontend/`，通过 OpenAPI 生成类型；手工切换适配
 
 ## 授权与取数
 
-初次授权流程为：解析 Cookie 格式与到期声明，调用网页 `me` 校验邮箱和 subject，经 `desktop_callback` 和 `desktop_poll` 换取桌面凭证，再调用 `desktop_me` 校验身份。Token 的本地解析不验证签名，身份确认依赖远端接口。新增/重新授权还需完成 6 项桌面额度请求，成功后才提交账号和快照。
+初次授权流程为：解析 Cookie 格式与到期声明，调用网页 `me` 校验邮箱和 subject，经 `desktop_callback` 和 `desktop_poll` 换取桌面凭证，再调用 `desktop_me` 校验身份。`desktop_callback` 在同一 Session 内先取 `/api/csrf-token`，以同值的 `csrf-token` Cookie 和 `x-csrf-token` 头提交；缺少时 cursor.com 返回 403 JSON，会被归为认证错误。Token 的本地解析不验证签名，身份确认依赖远端接口。新增/重新授权还需完成 6 项桌面额度请求，成功后才提交账号和快照。
 
 Cookie 的裸 `user_…` 可对应裸 subject 或 `提供方|user_…`（如 `auth0|`、`google-oauth2|`、`github|`）。Cookie ID 比较时提取后缀，完整 OAuth subject 继续用于上游身份校验及存储，不能因后缀相同就把不同提供方视为同一账号。V2 的本地 Cookie 校验失败返回 422 和固定错误码（`invalid_session_cookie` / `cookie_account_mismatch`），前端按白名单显示提示；上游请求/桌面凭证失败仍返回脱敏的 502。合成回归覆盖导入、重新授权、续期、身份不匹配及 Web/桌面提示。
 
