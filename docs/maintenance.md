@@ -7,7 +7,7 @@
 | 文件 | 职责 |
 |---|---|
 | [client.py](../cursor_dashboard/client.py) | 网页授权、桌面 RPC/套餐请求、错误分类与重试；每次尝试新建并关闭 Requests Session |
-| [sessions.py](../cursor_dashboard/sessions.py) | Cookie 交换、身份检查、旧账号迁移、桌面凭证续期 |
+| [sessions.py](../cursor_dashboard/sessions.py) | 浏览器授权链接与桌面凭证领取、身份检查、桌面凭证续期 |
 | [desktop.py](../cursor_dashboard/desktop.py) | PKCE、Token 格式/时间检查、命令生成；不在服务器执行命令 |
 | [switch_links.py](../cursor_dashboard/switch_links.py) | 有界内存短链接、原子单次领取和下载命令包装 |
 | [scripts/](../cursor_dashboard/scripts/) | macOS/PowerShell 包装脚本与公共 SQLite 切换引擎 |
@@ -26,9 +26,11 @@
 
 ## 授权与取数
 
-初次授权流程为：解析 Cookie 格式与到期声明，调用网页 `me` 校验邮箱和 subject，经 `desktop_callback` 和 `desktop_poll` 换取桌面凭证，再调用 `desktop_me` 校验身份。`desktop_callback` 在同一 Session 内先取 `/api/csrf-token`，以同值的 `csrf-token` Cookie 和 `x-csrf-token` 头提交；缺少时 cursor.com 返回 403 JSON，会被归为认证错误。Token 的本地解析不验证签名，身份确认依赖远端接口。新增/重新授权还需完成 6 项桌面额度请求，成功后才提交账号和快照。
+初次授权采用 Cursor 编辑器的浏览器确认流程：`POST /api/authorizations` 生成 PKCE 与 `https://cursor.com/loginDeepControl?challenge&uuid&mode=login` 链接，verifier 只保存在进程内存，5 分钟过期，最多 64 个待确认流程。用户在自己的浏览器确认后，`poll` 经 `desktop_poll` 领取桌面凭证（404 表示尚未确认，单流程至少间隔 1.5 秒查询上游，限流/网络错误最多容忍 5 次），校验 JWT 类型与 subject，再调用 `desktop_me` 校验身份；重新授权时邮箱必须与所选账号一致。Token 的本地解析不验证签名，身份确认依赖远端接口；还需完成 6 项桌面额度请求，成功后才提交账号和快照。领取结果单次有效，轮询期间取消则不保存。
 
-常规刷新、明细与切换先调用 `ensure_account()`。保存的凭证可用时直接复用；有 RT 时只走桌面续期，无 RT 的旧记录才通过 Cookie 迁移，已经标记撤销的记录直接要求重新授权。
+`accounts.cookie` 列保留但不再保存网页 Cookie：浏览器授权的账号写入不含凭证的随机标识 `browser:…`，每次授权更换，用作快照/明细 fingerprint 与续期条件更新的比较值；AT/RT 轮换不改变它。面板不再在浏览器外提交网页回调——Cursor 的 `loginDeepCallbackControl` 先后加入双提交 CSRF 和 Castle 风控（缺少浏览器生成的 `castleRequestToken` 时返回 403 纯文本），`POST /api/accounts` 返回 410。客户端 `desktop_callback` 仍按网页方式先取 `/api/csrf-token`，以同值的 `csrf-token` Cookie 和 `x-csrf-token` 头提交，仅供会话实验脚本使用，同样会被风控拒绝。
+
+常规刷新、明细与切换先调用 `ensure_account()`。保存的凭证可用时直接复用；有 RT 时只走桌面续期，无 RT 的旧记录直接要求在浏览器中重新授权，已经标记撤销的记录同样要求重新授权。
 
 续期窗口为 `expires_at - min(TOKEN_REFRESH_MARGIN, max(30, lifetime * 0.2))`，其中 `lifetime = token_expires_at - auth_refreshed_at`。这是下一次查询时执行的按需逻辑，没有独立的精确定时续期任务。桌面请求遇到 `AuthExpired` 后强制续期并重试一次。
 
@@ -83,7 +85,10 @@
 | `GET /api/account-index` | 账号身份索引、`can_switch`、部门人数，无上游请求 |
 | `GET /api/accounts` | 快照卡片、部门人数与总数，无上游请求 |
 | `GET /api/accounts/{id}` | 单卡快照 |
-| `POST /api/accounts` | `{cookie, label?, department?}`，授权并保存；同邮箱更新 |
+| `POST /api/accounts` | 旧 Cookie 授权入口，返回 410 |
+| `POST /api/authorizations` | `{label?, department?, account_key?}`，返回 Cursor 确认链接；带 `account_key` 为重新授权并校验邮箱 |
+| `POST /api/authorizations/{id}/poll` | 查询一次确认结果：`pending`，或 `completed` 并保存账号；同邮箱更新 |
+| `DELETE /api/authorizations/{id}` | 取消未完成的授权 |
 | `PATCH /api/accounts/{id}/department` | `{department}`，只更新部门及修改时间 |
 | `DELETE /api/accounts/{id}` | 删除本地账号和快照，不调用 Cursor 撤销会话 |
 | `POST /api/accounts/{id}/refresh` | 单卡回源或返回冷却/操作配额提示 |
@@ -159,7 +164,7 @@ node --check cursor_dashboard/web/js/glass-motion.js
 uv run --frozen python dev/preview-admin.py --port 8792
 ```
 
-打开 `http://127.0.0.1:8792/admin`，密码为 `preview-admin-password`。该进程在导入配置前设置临时 SQLite 路径，关闭调度并替换出站函数；内含 27 个模拟账号。可以验证登录、凭证分页、权限和额度视图；只模拟 `desktop_me`，新增授权、真实续期、额度刷新和明细不属于它的成功流程。预览切换命令在接触本机 Cursor 前退出。
+打开 `http://127.0.0.1:8792/admin`，密码为 `preview-admin-password`。该进程在导入配置前设置临时 SQLite 路径，关闭调度并替换出站函数；内含 27 个模拟账号。可以验证登录、凭证分页、权限和额度视图；新增与重新授权使用合成浏览器确认：第二次查询时确认，身份取账号名称中的 `user_…`，否则为 `user_preview_browser`。真实续期、额度刷新和明细不属于它的成功流程。预览切换命令在接触本机 Cursor 前退出。
 
 已安装 Playwright CLI 时，在独立浏览器会话执行：
 
@@ -175,4 +180,4 @@ playwright-cli --session archive-check close
 
 `dev/preview.py` 保留早期 18 账号动效夹具，当前未注入 `__ADMIN_CONTENT__`，管理脚本初始化失败，不能作为当前版本可用预览。依赖该夹具的 `verify-glass.js`、`verify-detail-motion.js`（8789）和 `verify-switch.js`（8790）保留待适配；不得将脚本存在描述为当前回归已通过。`preview-admin.py` 仍复用其中的模拟数据函数，不可直接删除文件。
 
-`dev/verify-session-lifecycle.py` 是真实双账号会话实验：`prepare --experiment EMAIL --control EMAIL` 从所选账号库读取 Cookie，签发独立桌面会话并验证；手动网页退出后，`check --state PATH` 继续验证保存的桌面凭证。它会访问 Cursor 并在私有临时目录保存 Cookie、AT/RT 和报告，不修改本机 Cursor 文件，不能作为离线测试运行。执行前明确实验账号、库路径和远端会话副作用，结束后妥善处理敏感状态文件。此次文档归档未重跑该实验。
+`dev/verify-session-lifecycle.py` 是真实双账号会话实验（依赖 Cookie 网页回调，Cursor 加入风控后当前无法运行，需改为浏览器确认才能复用）：`prepare --experiment EMAIL --control EMAIL` 从所选账号库读取 Cookie，签发独立桌面会话并验证；手动网页退出后，`check --state PATH` 继续验证保存的桌面凭证。它会访问 Cursor 并在私有临时目录保存 Cookie、AT/RT 和报告，不修改本机 Cursor 文件，不能作为离线测试运行。执行前明确实验账号、库路径和远端会话副作用，结束后妥善处理敏感状态文件。此次文档归档未重跑该实验。

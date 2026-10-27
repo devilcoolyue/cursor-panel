@@ -2,11 +2,11 @@
 
     cursor-quota                # 终端进度条
     cursor-quota --json         # 结构化输出，便于入库
-    cursor-quota -c other.json  # 临时读取旧版 JSON
+    cursor-quota -c other.json  # 按旧版 JSON 的账号逐个在浏览器中确认后查询
 
 默认读取 Web 面板共用的 SQLite 账号库；旧 JSON 格式见 accounts.example.json。
-Cookie 取法：浏览器登录 cursor.com
-→ F12 → Application → Cookies → https://cursor.com → 复制 WorkosCursorSessionToken 的 Value。
+Cursor 已不再接受在浏览器外用 Cookie 换取桌面凭证：-c 只使用文件中的名称，
+逐个打开 Cursor 登录确认页，在浏览器中用对应账号确认后查询，凭证不保存。
 
 全部成功退出码 0，任一账号失败为 1，方便挂定时任务。
 """
@@ -17,12 +17,14 @@ import argparse
 import asyncio
 import json
 import sys
+import time
+import webbrowser
 from pathlib import Path
 
 from . import sessions
 from .client import AuthExpired, DESKTOP_ENDPOINTS, RateLimited, fetch_one
 from .config import REQUEST_MIN_INTERVAL
-from .desktop import DesktopSessionError
+from .desktop import DesktopSessionError, login_challenge
 from .store import AccountsError, load_accounts
 from .usage import assemble_desktop
 
@@ -57,7 +59,22 @@ def render(d: dict) -> str:
     return "\n".join(lines)
 
 
-async def query_accounts(accounts, *, temporary=False):
+async def browser_login(label, fetch, *, open_browser=webbrowser.open, timeout=180, interval=2):
+    """等待用户在浏览器中确认 Cursor 桌面登录页。"""
+    flow, verifier, challenge = login_challenge()
+    url = sessions.login_url(flow, challenge)
+    print(f"[{label}] 请在浏览器中用该账号确认登录（{timeout // 60} 分钟内有效）：\n{url}", file=sys.stderr, flush=True)
+    open_browser(url)
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        session = await sessions.poll_session(fetch, label, flow, verifier)
+        if session:
+            return session
+        await asyncio.sleep(interval)
+    raise DesktopSessionError("等待浏览器确认超时，请重新运行。")
+
+
+async def query_accounts(accounts, *, temporary=False, login=browser_login):
     async def fetch(cookie, label, name, *args):
         await asyncio.sleep(REQUEST_MIN_INTERVAL)
         return await asyncio.to_thread(fetch_one, cookie, label, name, *args)
@@ -67,9 +84,9 @@ async def query_accounts(accounts, *, temporary=False):
         label = account.get("label") or "unnamed"
         try:
             if temporary:
-                session, email = await sessions.exchange_cookie(account["cookie"], label, fetch)
+                session = await login(label, fetch)
                 raw = [await fetch("", label, name, session.token) for name in DESKTOP_ENDPOINTS]
-                sessions.verify_identity(raw[0], email=email, subject=session.subject)
+                sessions.verify_identity(raw[0], email=account.get("email"), subject=session.subject)
             else:
                 account = await sessions.ensure_account(account, fetch)
                 raw = [await sessions.request_account(account, fetch, name) for name in DESKTOP_ENDPOINTS]
@@ -86,7 +103,7 @@ async def query_accounts(accounts, *, temporary=False):
 
 def main():
     ap = argparse.ArgumentParser(description="查询 Cursor 账号额度")
-    ap.add_argument("-c", "--config", help="读取指定的旧版 JSON 账号文件")
+    ap.add_argument("-c", "--config", help="按旧版 JSON 文件中的账号逐个在浏览器中确认后查询")
     ap.add_argument("--json", action="store_true", help="输出 JSON，方便入库")
     args = ap.parse_args()
 

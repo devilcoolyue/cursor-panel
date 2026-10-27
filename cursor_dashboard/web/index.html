@@ -222,18 +222,19 @@
       autocomplete="off" maxlength="64" hidden>
   </div>
   <div class="f">
-    <label for="d-cookie">Cookie</label>
-    <textarea id="d-cookie" placeholder="粘贴 WorkosCursorSessionToken 的 Value…"></textarea>
-    <p class="hint-text">
-      浏览器登录 <a href="https://cursor.com/dashboard" target="_blank" rel="noopener">cursor.com</a>
-      → F12 → Application → Cookies → <code>https://cursor.com</code>
-      → 找到 <code>WorkosCursorSessionToken</code> → 复制 Value。
+    <p class="hint-text" id="d-browser-hint">
+      点击「在浏览器中授权」后会打开 Cursor 登录确认页，与 Cursor 编辑器登录相同，无需复制 Cookie。
+      请先确认浏览器当前登录的是要授权的 Cursor 账号，确认后自动保存。
+    </p>
+    <p class="hint-text" id="d-browser-wait" hidden>
+      已打开 Cursor 登录确认页，请在浏览器中用该账号确认登录（5 分钟内有效）。关闭本窗口即取消。
+      <a id="d-browser-link" href="https://cursor.com" target="_blank" rel="noopener noreferrer">重新打开确认页 ↗</a>
     </p>
   </div>
   <div class="row ui-dialog-actions">
     <span class="status" id="d-status" role="status" style="flex:1;text-align:left"></span>
     <button id="d-cancel" data-close-dialog="dlg">取消</button>
-    <button class="primary" id="d-save">授权并保存</button>
+    <button class="primary" id="d-save">在浏览器中授权</button>
   </div>
 </dialog>
 

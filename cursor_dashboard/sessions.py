@@ -4,15 +4,22 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import re
 import secrets
 import time
+from urllib.parse import urlencode
 
 import requests
 
 from . import store
 from .client import AuthExpired
 from .config import TOKEN_REFRESH_MARGIN
-from .desktop import DesktopSession, DesktopSessionError, desktop_session, login_challenge, parse_session, refreshed_session
+from .desktop import DesktopSession, DesktopSessionError, desktop_session, refreshed_session, token_claims
+
+# 浏览器确认页由用户在自己的浏览器里提交，Cursor 的 CSRF 与风控校验都在那里完成；
+# 面板不再在浏览器外提交网页回调（Castle 风控令牌只能由该页面生成）。
+LOGIN_URL = "https://cursor.com/loginDeepControl"
+SUBJECT = re.compile(r"(?:[A-Za-z0-9_-]+\|)?user_[A-Za-z0-9_-]+")
 
 
 def session_from_account(account):
@@ -24,7 +31,7 @@ def verify_identity(data, *, email=None, subject=None):
     actual_email = data.get("email") if isinstance(data, dict) else None
     actual_subject = (data.get("authId") or data.get("sub")) if isinstance(data, dict) else None
     if not isinstance(actual_email, str) or not actual_email.strip():
-        raise AuthExpired("会话已失效，请重新登录网页版并更新 Cookie。")
+        raise AuthExpired("会话已失效，请重新授权。")
     if email and actual_email.casefold() != email.casefold():
         raise DesktopSessionError("凭证与所选账号的邮箱不一致。")
     if subject and (not isinstance(actual_subject, str)
@@ -33,26 +40,22 @@ def verify_identity(data, *, email=None, subject=None):
     return actual_email
 
 
-async def exchange_cookie(cookie, label, fetch, *, expected_email=None):
-    source = parse_session(cookie)
-    me = await fetch(cookie, label, "me")
-    email = verify_identity(me, email=expected_email, subject=source.subject)
-    flow, verifier, challenge = login_challenge()
-    await fetch(cookie, label, "desktop_callback", flow, challenge)
-    for attempt in range(5):
-        try:
-            data = await fetch("", label, "desktop_poll", flow, verifier)
-            session = desktop_session(data, source.subject)
-            break
-        except requests.HTTPError as exc:
-            if exc.response is None or exc.response.status_code != 404:
-                raise
-            if attempt == 4:
-                raise DesktopSessionError("Cursor 尚未签发桌面凭证，请稍后重试。") from None
-            await asyncio.sleep(.5)
-    identity = await fetch("", label, "desktop_me", session.token)
-    verify_identity(identity, email=email, subject=session.subject)
-    return session, email
+def login_url(flow, challenge):
+    return LOGIN_URL + "?" + urlencode({"challenge": challenge, "uuid": flow, "mode": "login"})
+
+
+async def poll_session(fetch, label, flow, verifier):
+    """浏览器确认后返回桌面会话；尚未确认（上游 404）时返回 None。"""
+    try:
+        data = await fetch("", label, "desktop_poll", flow, verifier)
+    except requests.HTTPError as exc:
+        if exc.response is not None and exc.response.status_code == 404:
+            return None
+        raise
+    subject = token_claims(data.get("accessToken") if isinstance(data, dict) else None).get("sub")
+    if not isinstance(subject, str) or not SUBJECT.fullmatch(subject):
+        raise DesktopSessionError("Cursor 返回的桌面凭证身份无效。")
+    return desktop_session(data, subject)
 
 
 def _usable(account, rejected_token):
@@ -96,23 +99,18 @@ async def ensure_account(account, fetch, *, rejected_token=None):
         if current.get("auth_invalid"):
             raise AuthExpired("桌面会话已被撤销，请重新授权。")
         label = current.get("label") or key
+        if not current.get("refresh_token"):
+            # Cursor 不再接受在浏览器外用 Cookie 换取桌面凭证。
+            raise AuthExpired("旧账号需要在浏览器中重新授权。")
         try:
-            if current.get("refresh_token"):
-                data = await fetch("", label, "desktop_refresh", current["refresh_token"])
-                if isinstance(data, dict) and data.get("shouldLogout") is True:
-                    raise AuthExpired("桌面会话已被撤销，请重新授权。")
-                session = refreshed_session(data, current["auth_subject"])
-            else:
-                session, _ = await exchange_cookie(current["cookie"], label, fetch, expected_email=current.get("email"))
+            data = await fetch("", label, "desktop_refresh", current["refresh_token"])
+            if isinstance(data, dict) and data.get("shouldLogout") is True:
+                raise AuthExpired("桌面会话已被撤销，请重新授权。")
+            session = refreshed_session(data, current["auth_subject"])
         except AuthExpired:
-            if current.get("refresh_token"):
-                changed = await asyncio.to_thread(store.update_session, current, invalid=True)
-                if not changed:
-                    return await _latest(key)
-            raise
-        except DesktopSessionError:
-            if not current.get("refresh_token"):
-                raise AuthExpired("旧账号无法迁移桌面授权，请重新粘贴有效 Cookie。") from None
+            changed = await asyncio.to_thread(store.update_session, current, invalid=True)
+            if not changed:
+                return await _latest(key)
             raise
         await asyncio.to_thread(store.update_session, current, session)
         return await _latest(key)

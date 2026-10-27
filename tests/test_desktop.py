@@ -15,7 +15,8 @@ import threading
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
+from urllib.parse import parse_qs, urlsplit
 
 import requests
 from fastapi import HTTPException, Request
@@ -500,15 +501,47 @@ class SwitchEndpointTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.headers["cache-control"], "no-store")
         self.assertEqual(set(json.loads(response.body)["commands"]), {"macos", "windows"})
 
-    async def test_pending_desktop_login_is_bounded(self):
+    async def test_browser_poll_waits_then_validates_issued_session(self):
         response = requests.Response()
         response.status_code = 404
         pending = requests.HTTPError(response=response)
-        responses = [{'email': self.account['email'], 'sub':'auth0|user_test'}, {}] + [pending] * 5
-        with patch.object(server, 'fetch_cursor', side_effect=responses) as fetch, \
-             patch.object(server.asyncio, 'sleep'), self.assertRaises(desktop.DesktopSessionError):
-            await sessions.exchange_cookie(self.account['cookie'], 'Test', fetch)
-        self.assertEqual(fetch.await_count, 7)
+        url = urlsplit(sessions.login_url('flow-id', 'challenge-value'))
+        self.assertEqual((url.scheme, url.netloc, url.path), ('https', 'cursor.com', '/loginDeepControl'))
+        self.assertEqual(parse_qs(url.query), {'challenge': ['challenge-value'], 'uuid': ['flow-id'], 'mode': ['login']})
+        oauth = session_response(sub='google-oauth2|user_test')
+        web = {'accessToken': cookie_for().partition('%3A%3A')[2], 'refreshToken': 'web-refresh'}
+        fetch = AsyncMock(side_effect=[pending, oauth, web, {'accessToken': 'bad'}])
+        self.assertIsNone(await sessions.poll_session(fetch, 'Test', 'flow', 'verifier'))
+        issued = await sessions.poll_session(fetch, 'Test', 'flow', 'verifier')
+        self.assertEqual((issued.subject, issued.token_type), ('google-oauth2|user_test', 'session'))
+        for _ in range(2):
+            with self.assertRaises(desktop.DesktopSessionError):
+                await sessions.poll_session(fetch, 'Test', 'flow', 'verifier')
+        self.assertEqual(fetch.await_args_list[0].args, ('', 'Test', 'desktop_poll', 'flow', 'verifier'))
+
+    async def test_cli_temporary_query_waits_for_browser_confirmation(self):
+        from functools import partial
+        from cursor_dashboard import cli
+        session, calls, opened = valid_desktop_session(), [], []
+        def fetch(cookie, label, name, *args):
+            calls.append((cookie, name))
+            if name == 'desktop_poll':
+                if calls.count(('', 'desktop_poll')) == 1:
+                    response = requests.Response()
+                    response.status_code = 404
+                    raise requests.HTTPError(response=response)
+                return {'accessToken': session.token, 'refreshToken': session.refresh_token}
+            if name == 'desktop_me':
+                return {'email': 'test@example.test', 'authId': session.subject}
+            return {}
+        with patch.object(cli, 'fetch_one', side_effect=fetch), patch.object(cli, 'REQUEST_MIN_INTERVAL', 0):
+            results, failed = await cli.query_accounts([{'label': 'Temporary', 'cookie': 'ignored-legacy-cookie'}],
+                temporary=True, login=partial(cli.browser_login, open_browser=opened.append, interval=0))
+        self.assertEqual(failed, 0, results)
+        self.assertEqual(results[0]['email'], 'test@example.test')
+        self.assertEqual(urlsplit(opened[0])[1:3], ('cursor.com', '/loginDeepControl'))
+        self.assertEqual({cookie for cookie, _ in calls}, {''})
+        self.assertFalse({'me', 'desktop_callback'} & {name for _, name in calls})
 
     async def test_rejected_or_unknown_sessions_never_generate_commands(self):
         for error, code in ((AuthExpired("expired"), 400), (RateLimited("limited"), 503),

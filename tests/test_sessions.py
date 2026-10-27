@@ -23,6 +23,12 @@ def credential(marker="initial", expires=None):
                                   "refresh-" + marker, "session")
 
 
+def pending_poll():
+    response = requests.Response()
+    response.status_code = 404
+    return requests.HTTPError(response=response)
+
+
 class SessionStoreTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         folder = tempfile.TemporaryDirectory()
@@ -39,6 +45,8 @@ class SessionStoreTest(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(store._initialized.clear)
         self.addCleanup(snapshot._snapshots.clear)
         self.addCleanup(snapshot._inflight.clear)
+        server._authorizations.clear()
+        self.addCleanup(server._authorizations.clear)
         self.email = "test@example.test"
         self.account = store.upsert_account("expired-web-cookie", self.email, "Test", session=credential())
 
@@ -116,18 +124,25 @@ class SessionStoreTest(unittest.IsolatedAsyncioTestCase):
             await sessions.ensure_account(self.account, fetch, rejected_token=self.account["access_token"])
         self.assertIsNone(store.get_account(self.email))
 
-    async def test_legacy_cookie_migrates_once_then_survives_cookie_failure(self):
-        web = "user_test::" + credential().token
-        legacy = store.upsert_account(web, self.email, "Test")
-        new = credential("migrated")
-        identity = {"email": self.email, "sub": new.subject, "authId": new.subject}
-        fetch = AsyncMock(side_effect=[identity, {}, {"accessToken": new.token, "refreshToken": new.refresh_token}, identity])
-        saved = await sessions.ensure_account(legacy, fetch)
-        self.assertEqual(saved["refresh_token"], new.refresh_token)
-        self.assertEqual([c.args[2] for c in fetch.await_args_list], ["me", "desktop_callback", "desktop_poll", "desktop_me"])
-        fetch.reset_mock()
-        await sessions.ensure_account(legacy, fetch)
+    async def test_legacy_record_without_refresh_token_requires_browser_reauthorization(self):
+        legacy = store.upsert_account("user_test::" + credential().token, self.email, "Test")
+        fetch = AsyncMock()
+        with self.assertRaises(AuthExpired):
+            await sessions.ensure_account(legacy, fetch)
         fetch.assert_not_called()
+
+    async def browser_authorize(self, **request):
+        """Start through the HTTP handler and poll until the synthetic browser confirmation arrives."""
+        started = await server.api_authorization_start(server.AuthorizationReq(**request))
+        self.assertTrue(started["login_url"].startswith("https://cursor.com/loginDeepControl?"))
+        for _ in range(3):
+            pending = server._authorizations.get(started["id"])
+            if pending:
+                pending.next_poll = 0
+            result = await server.api_authorization_poll(started["id"])
+            if result["status"] == "completed":
+                return result
+        self.fail("Browser authorization did not complete")
 
     async def test_renewal_keeps_snapshot_and_public_views_do_not_leak_tokens(self):
         snapshot.record_success(self.email, self.account["cookie"], {"email":self.email, "quota":{"overall":{"remaining_pct":50}}})
@@ -140,8 +155,10 @@ class SessionStoreTest(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn(secret, repr(view))
             self.assertNotIn(secret, repr(server.account_index([updated])))
 
-    async def test_add_account_commits_credentials_before_future_cookie_is_needed(self):
+    async def test_browser_authorization_commits_credentials_without_cookie(self):
         new = credential("saved")
+        old_snapshot = {"email": self.email, "quota": {"overall": {"remaining_pct": 10}}}
+        snapshot.record_success(self.email, self.account["cookie"], old_snapshot)
         data = {
             "desktop_me": {"email": self.email, "authId": new.subject},
             "desktop_plan": {"planInfo":{"planName":"Free"}},
@@ -149,22 +166,71 @@ class SessionStoreTest(unittest.IsolatedAsyncioTestCase):
             "desktop_period": {"planUsage":{"totalSpend":0}},
             "desktop_grok": {"includedLimitZero":True}, "desktop_limit":{"noUsageBasedAllowed":True},
         }
+        polls = []
         async def fetch(cookie, label, name, *args):
             self.assertEqual(cookie, "")
+            if name == "desktop_poll":
+                polls.append(args)
+                if len(polls) == 1:
+                    raise pending_poll()
+                return {"accessToken": new.token, "refreshToken": new.refresh_token}
             return data[name]
-        with patch.object(sessions, "exchange_cookie", return_value=(new, self.email)), \
-             patch.object(server, "fetch_cursor", side_effect=fetch):
-            result = await server.api_save(server.SaveReq(cookie="new-web-cookie", label="Saved"))
-        self.assertTrue(result["ok"])
+        with patch.object(server, "fetch_cursor", side_effect=fetch):
+            result = await self.browser_authorize(label="Saved", account_key=self.email)
+        self.assertEqual((result["status"], result["email"], result["label"]), ("completed", self.email, "Saved"))
         saved = store.get_account(self.email)
         self.assertEqual(saved["refresh_token"], new.refresh_token)
+        # The column keeps a non-secret authorization marker, so the old snapshot is replaced.
+        self.assertTrue(saved["cookie"].startswith("browser:"))
+        self.assertNotEqual(saved["cookie"], self.account["cookie"])
+        self.assertTrue(snapshot.view(saved, self.email)["ok"])
         self.assertNotIn(new.token, repr(result))
+        self.assertEqual(server._authorizations, {})
 
-    async def test_failed_new_authorization_does_not_destroy_existing_credentials(self):
-        with patch.object(sessions, "exchange_cookie", side_effect=AuthExpired("invalid")), \
-             self.assertRaises(server.HTTPException):
-            await server.api_save(server.SaveReq(cookie="bad-cookie"))
+    async def test_mismatched_or_failed_authorization_keeps_existing_credentials(self):
+        other = credential("other")
+        async def mismatched(cookie, label, name, *args):
+            if name == "desktop_poll":
+                return {"accessToken": other.token, "refreshToken": other.refresh_token}
+            if name == "desktop_me":
+                return {"email": "other@example.test", "authId": other.subject}
+            raise AssertionError("Another identity must be rejected before usage queries")
+        async def expired(cookie, label, name, *args):
+            if name == "desktop_poll":
+                return {"accessToken": other.token, "refreshToken": other.refresh_token}
+            raise AuthExpired("invalid")
+        for fetch, status in ((mismatched, 409), (expired, 400)):
+            with self.subTest(status=status), patch.object(server, "fetch_cursor", side_effect=fetch), \
+                 self.assertRaises(server.HTTPException) as raised:
+                await self.browser_authorize(account_key=self.email)
+            self.assertEqual(raised.exception.status_code, status)
         self.assertEqual(store.get_account(self.email)["access_token"], self.account["access_token"])
+        self.assertEqual(server._authorizations, {})
+        with self.assertRaises(server.HTTPException) as raised:
+            await server.api_authorization_start(server.AuthorizationReq(account_key="missing@example.test"))
+        self.assertEqual(raised.exception.status_code, 404)
+
+    async def test_browser_authorization_paces_tolerates_transient_errors_expires_and_cancels(self):
+        with patch.object(server, "fetch_cursor", side_effect=[pending_poll(), RateLimited("limited")]) as fetch:
+            started = await server.api_authorization_start(server.AuthorizationReq())
+            for _ in range(2):
+                server._authorizations[started["id"]].next_poll = 0
+                self.assertEqual(await server.api_authorization_poll(started["id"]), {"status": "pending"})
+            self.assertEqual(await server.api_authorization_poll(started["id"]), {"status": "pending"})
+            self.assertEqual(fetch.await_count, 2)
+            self.assertEqual(server._authorizations[started["id"]].failures, 1)
+            server._authorizations[started["id"]].expires_at = 0
+            with self.assertRaises(server.HTTPException) as raised:
+                await server.api_authorization_poll(started["id"])
+            self.assertEqual(raised.exception.status_code, 410)
+            started = await server.api_authorization_start(server.AuthorizationReq())
+            await server.api_authorization_cancel(started["id"])
+            with self.assertRaises(server.HTTPException) as raised:
+                await server.api_authorization_poll(started["id"])
+            self.assertEqual(raised.exception.status_code, 404)
+        with self.assertRaises(server.HTTPException) as raised:
+            server.api_save_cookie()
+        self.assertEqual(raised.exception.status_code, 410)
 
     async def test_refresh_with_stale_account_record_uses_current_snapshot_identity(self):
         new = store.upsert_account('new-web-cookie', self.email, 'Renamed', session=credential('replacement'))

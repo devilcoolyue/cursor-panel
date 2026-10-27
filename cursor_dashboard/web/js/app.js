@@ -377,7 +377,7 @@ function card(a) {
         <div class="name-line"><span class="label">${esc(a.label)}</span></div>
         ${identityMeta(a.department, a.email)}
       </div>
-      <div class="err">${a.expired ? '桌面授权已失效，点钥匙图标重新粘贴有效 Cookie 授权' : esc(a.error)}</div>
+      <div class="err">${a.expired ? '桌面授权已失效，点钥匙图标在浏览器中重新授权' : esc(a.error)}</div>
       ${shows('statTime') && a.ok_at ? `<div class="meta"><div><span>最后统计</span>
         <b>${esc(statTime(a.ok_at))}</b></div></div>` : ''}
     </div>`;
@@ -1053,7 +1053,7 @@ view.addEventListener('click', async (e) => {
   } else if (deptId !== undefined) {
     openDepartmentDialog(deptId, label, department);
   } else if (edit !== undefined) {
-    openDialog(label, department, true);
+    openDialog(label, department, edit);
   }
 });
 
@@ -1462,54 +1462,108 @@ window.addEventListener('keydown', (e) => {
 const dlg = $('#dlg'), dstat = $('#d-status');
 const say = (text, cls = '') => { dstat.className = 'status ' + cls; dstat.textContent = text; };
 
-function openDialog(label = '', department = '', isEdit = false) {
-  dlg.dataset.editing = String(isEdit);
-  $('#d-title').textContent = isEdit ? '重新授权' : '添加账号';
+// 授权在用户自己的浏览器中确认；面板只轮询结果。代次使关闭或重开后的旧响应失效。
+let authorization = null, authorizationRun = 0;
+const authorizationPath = (id) => '/api/authorizations/' + encodeURIComponent(id);
+
+function resetAuthorization() {
+  ++authorizationRun;
+  if (authorization) {
+    clearTimeout(authorization.timer);
+    fetch(authorizationPath(authorization.id), { method: 'DELETE', headers: headers() }).catch(() => {});
+  }
+  authorization = null;
+  $('#d-browser-hint').hidden = false;
+  $('#d-browser-wait').hidden = true;
+}
+
+function openDialog(label = '', department = '', accountKey = '') {
+  resetAuthorization();
+  dlg.dataset.editing = String(Boolean(accountKey));
+  dlg.dataset.account = accountKey;
+  $('#d-title').textContent = accountKey ? '重新授权' : '添加账号';
   $('#d-label').value = label || '';
   populateDepartmentSelect($('#d-department'), $('#d-department-new'), department);
-  $('#d-cookie').value = '';
   $('#d-save').disabled = false;
   say('');
   openModal(dlg);
-  (isEdit ? $('#d-cookie') : $('#d-label')).focus();
+  $('#d-label').focus();
+}
+dlg.addEventListener('close', resetAuthorization);
+
+function failAuthorization(text) {
+  authorization = null;
+  $('#d-browser-hint').hidden = false;
+  $('#d-browser-wait').hidden = true;
+  $('#d-save').disabled = false;
+  say(text, 'bad');
 }
 
 $('#d-save').onclick = async () => {
   const isEdit = dlg.dataset.editing === 'true';
-  const cookie = $('#d-cookie').value.trim();
   const department = readDepartment($('#d-department'), $('#d-department-new'));
-  if (!cookie) return say('cookie 不能为空', 'bad');
   if ($('#d-department').value === NEW_DEPARTMENT && !department) {
     return say('请输入新部门名称，或选择未分组', 'bad');
   }
+  resetAuthorization();
+  const run = authorizationRun;
   $('#d-save').disabled = true;
-  say('正在获取桌面凭证并验证额度…', 'busy');
+  say('正在生成授权链接…', 'busy');
+  // 在点击当下打开标签页，避免被浏览器拦截；拿到链接后再跳转。
+  const tab = window.open('', '_blank');
+  if (tab) tab.opener = null;
   try {
-    const r = await fetch('/api/accounts', {
+    const r = await fetch('/api/authorizations', {
       method: 'POST', headers: jsonHeaders(),
       body: JSON.stringify({
-        cookie,
         label: $('#d-label').value.trim() || null,
-        department
+        department,
+        account_key: isEdit ? dlg.dataset.account : null
       })
     });
     const d = await r.json();
-    if (r.ok) {
-      selectedDepartment = d.department || '';
-      localStorage.setItem('selectedDepartment', selectedDepartment);
-      say('已保存 ' + (d.email || d.label), 'good');
-      PanelUI.close(dlg);
-      if (!isEdit) clearSearch();
-      await load({ addedId: !isEdit ? (d.email || d.label) : null });
-    } else {
-      say(d.detail || '保存失败', 'bad');
-      $('#d-save').disabled = false;
-    }
+    if (run !== authorizationRun) { tab?.close(); return; }
+    if (!r.ok) { tab?.close(); return failAuthorization(d.detail || '无法开始授权'); }
+    authorization = { id: d.id, expiresAt: d.expires_at, isEdit, timer: 0 };
+    $('#d-browser-link').href = d.login_url;
+    $('#d-browser-hint').hidden = true;
+    $('#d-browser-wait').hidden = false;
+    say('等待在浏览器中确认…', 'busy');
+    if (tab && !tab.closed) tab.location.href = d.login_url;
+    else if (!window.open(d.login_url, '_blank', 'noopener,noreferrer')) say('浏览器拦截了新窗口，请点「重新打开确认页」。', 'bad');
+    authorization.timer = setTimeout(() => pollAuthorization(run), 2000);
   } catch (e) {
-    say('请求失败：' + e.message, 'bad');
-    $('#d-save').disabled = false;
+    tab?.close();
+    if (run === authorizationRun) failAuthorization('请求失败：' + e.message);
   }
 };
+
+async function pollAuthorization(run) {
+  const current = authorization;
+  if (run !== authorizationRun || !current) return;
+  try {
+    const r = await fetch(authorizationPath(current.id) + '/poll', { method: 'POST', headers: headers() });
+    const d = await r.json();
+    if (run !== authorizationRun) return;
+    if (!r.ok) return failAuthorization(d.detail || '授权失败，请重新在浏览器中授权。');
+    if (d.status === 'pending') {
+      current.timer = setTimeout(() => pollAuthorization(run), 2000);
+      return;
+    }
+    authorization = null;
+    selectedDepartment = d.department || '';
+    localStorage.setItem('selectedDepartment', selectedDepartment);
+    say('已保存 ' + (d.email || d.label), 'good');
+    PanelUI.close(dlg);
+    if (!current.isEdit) clearSearch();
+    await load({ addedId: !current.isEdit ? (d.email || d.label) : null });
+  } catch (e) {
+    if (run !== authorizationRun) return;
+    // 网络抖动时继续等待，直到确认页过期。
+    if (Date.now() / 1000 >= current.expiresAt) return failAuthorization('授权已超时，请重新在浏览器中授权。');
+    current.timer = setTimeout(() => pollAuthorization(run), 4000);
+  }
+}
 
 $('#add').onclick = () => openDialog(
   '', selectedDepartment === ALL_DEPARTMENTS ? '' : selectedDepartment

@@ -99,11 +99,11 @@ sudo journalctl -u cursor-dashboard -n 50 --no-pager
 
 SQLite 启用 WAL，账号表 schema 标记为 v4，启动时按缺失列补齐。主要表为 `accounts`、`snapshots`、`metadata`、`auth_leases`；管理员初始化另建 `admin_sessions` 和 `admin_login_attempts`。
 
-Cookie、AT、RT 在账号表中明文保存；快照只存组装后的业务数据和 Cookie 的 SHA-256 前 16 位。初始化时将存在的数据库及 WAL/SHM 文件设为 0600，服务部署仍应使用受限目录和 `UMask=0077`。备份同样包含凭证。
+AT、RT 及旧账号残留的 Cookie 在账号表中明文保存（浏览器授权的账号只存不含凭证的授权标识）；快照只存组装后的业务数据和该列的 SHA-256 前 16 位。初始化时将存在的数据库及 WAL/SHM 文件设为 0600，服务部署仍应使用受限目录和 `UMask=0077`。备份同样包含凭证。
 
 `metadata.legacy_json_migrated` 不存在时读取旧 JSON 并写入迁移标记，即使当时没有旧文件也会标记完成。原 JSON 保留，后续不再自动读取；因此应在首次初始化前放好迁移文件，不要依靠反复改 JSON 更新已初始化的库。
 
-[accounts.example.json](../accounts.example.json) 是旧格式示例，不是运行所需配置。推荐每条提供 `label`、`cookie`，`department` 可选，已有 `email` 可保留以便去重；迁移器实际只导入含非空 Cookie 的对象，缺少姓名时会生成默认值。仅有 Cookie 的账号首次查询时才换取桌面凭证。
+[accounts.example.json](../accounts.example.json) 是旧格式示例，不是运行所需配置。推荐每条提供 `label`、`cookie`，`department` 可选，已有 `email` 可保留以便去重；迁移器实际只导入含非空 Cookie 的对象，缺少姓名时会生成默认值。仅有 Cookie 的账号无法再换取桌面凭证，导入后需在浏览器中重新授权。
 
 `cursor-quota` 默认直接查询共享库中的账号，并可能保存迁移/续期结果；它不写 Web 快照，也不使用面板的同套餐额度池补齐。`cursor-quota -c other.json` 每次临时授权，不读写账号库，凭证仅用于该次进程。
 
@@ -132,7 +132,7 @@ sqlite3 /private/backups/accounts-stage-20260907.db 'PRAGMA integrity_check;'
 | 明细返回 409 | 快照尚无账单周期起点，等待账号成功刷新 |
 | 短链接返回 410 或下载失败 | 链接已使用、过期、服务重启或授权已变更时重新生成；检查终端能否访问面板地址及反向代理配置 |
 | 切换返回 403 | 管理员会话或开放范围；已登录时还应检查 CSRF、Origin 和代理协议 |
-| 续期或授权失败 | 确认远端会话是否撤销；临时限流应等待，避免反复提交同一 Cookie |
+| 续期或授权失败 | 确认远端会话是否撤销；临时限流应等待；授权时确认浏览器登录的是目标账号 |
 | 本地 HTTP 请求走了代理 | 使用 `curl --noproxy '*'`，不假设所有机器都配置了相同代理 |
 
 不要将真实 `accounts.json`、数据库、会话文件、切换命令或其备份纳入源码归档。`.gitignore` 已排除常见路径，归档前仍需核对实际打包范围。

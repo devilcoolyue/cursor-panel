@@ -23,18 +23,20 @@ import time
 import webbrowser
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, suppress
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 import uvicorn
 import requests
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import admin, pools, snapshot, sessions
 from .client import DESKTOP_ENDPOINTS, AuthExpired, RateLimited, fetch_one
+from .desktop import DesktopSessionError, login_challenge
 from .config import (
     DATABASE_PATH,
     DETAIL_TTL,
@@ -118,7 +120,7 @@ def _classify(errors: list[BaseException]) -> tuple[str, str]:
     if any(isinstance(e, RateLimited) for e in errors):
         return "rate_limited", "Cursor 暂时限制了请求，稍后会自动重试"
     if any(isinstance(e, AuthExpired) for e in errors):
-        return "expired", "桌面授权已失效，请重新粘贴有效 Cookie 授权"
+        return "expired", "桌面授权已失效，请点钥匙图标在浏览器中重新授权"
     if any(isinstance(e, requests.Timeout) for e in errors):
         return "network", "连接 Cursor 超时，稍后会自动重试"
     if any(isinstance(e, requests.ConnectionError) for e in errors):
@@ -329,10 +331,34 @@ def require_switch(request: Request | None, acc: dict) -> None:
         raise HTTPException(403, "此账号暂未开放本地切换")
 
 
-class SaveReq(BaseModel):
-    cookie: str
-    label: str | None = None
+class AuthorizationReq(BaseModel):
+    label: str | None = Field(default=None, max_length=256)
     department: str | None = Field(default=None, max_length=64)
+    account_key: str | None = Field(default=None, max_length=320)
+
+
+# 浏览器授权：确认页 5 分钟有效；verifier 只在进程内存中，单流程至少间隔 1.5 秒查询上游。
+AUTHORIZATION_TTL = 300
+AUTHORIZATION_POLL_INTERVAL = 1.5
+AUTHORIZATION_RETRY_DELAY = 5
+AUTHORIZATION_MAX_FAILURES = 5
+MAX_AUTHORIZATIONS = 64
+
+
+@dataclass(eq=False)
+class BrowserAuthorization:
+    label: str | None
+    department: str | None
+    expected_email: str | None
+    flow: str
+    verifier: str = field(repr=False)
+    expires_at: float = 0
+    next_poll: float = 0
+    failures: int = 0
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
+
+
+_authorizations: dict[str, BrowserAuthorization] = {}
 
 
 class DepartmentReq(BaseModel):
@@ -580,50 +606,106 @@ def api_account_one(account_key: str, request: Request):
 
 
 @app.post("/api/accounts", dependencies=[Depends(require_token)])
-async def api_save(req: SaveReq, request: Request = None):
-    """Exchange the submitted cookie and validate desktop queries before committing."""
-    cookie = req.cookie.strip()
-    if not cookie:
-        raise HTTPException(400, "cookie 为空")
-    label = req.label or ""
+def api_save_cookie():
+    # Cursor 的网页回调加入了只能在浏览器中生成的风控令牌，Cookie 换票已不可用。
+    raise HTTPException(410, "Cursor 已不再支持 Cookie 授权，请刷新页面后在浏览器中授权。")
+
+
+@app.post("/api/authorizations", dependencies=[Depends(require_token)])
+async def api_authorization_start(req: AuthorizationReq):
+    """生成 Cursor 登录确认链接；用户在自己的浏览器确认后，由 poll 领取桌面凭证。"""
+    expected_email = None
+    if req.account_key:
+        expected_email = find_account(req.account_key).get("email")
+    now = time.time()
+    for key in [key for key, item in _authorizations.items() if item.expires_at + AUTHORIZATION_TTL <= now]:
+        del _authorizations[key]
+    if len(_authorizations) >= MAX_AUTHORIZATIONS:
+        raise HTTPException(429, "待确认的授权过多，请稍后重试。")
+    flow, verifier, challenge = login_challenge()
+    key = secrets.token_urlsafe(24)
+    _authorizations[key] = BrowserAuthorization((req.label or "").strip() or None, req.department, expected_email,
+                                                flow, verifier, now + AUTHORIZATION_TTL)
+    return {"id": key, "login_url": sessions.login_url(flow, challenge), "expires_at": int(now + AUTHORIZATION_TTL)}
+
+
+@app.post("/api/authorizations/{authorization_id}/poll", dependencies=[Depends(require_token)])
+async def api_authorization_poll(authorization_id: str, request: Request = None):
+    item = _authorizations.get(authorization_id)
+    if item is None:
+        raise HTTPException(404, "授权已结束，请重新在浏览器中授权。")
+    async with item.lock:
+        if _authorizations.get(authorization_id) is not item:
+            raise HTTPException(404, "授权已结束，请重新在浏览器中授权。")
+        if time.time() >= item.expires_at:
+            _authorizations.pop(authorization_id, None)
+            raise HTTPException(410, "授权已超时，请重新在浏览器中授权。")
+        if time.monotonic() < item.next_poll:
+            return {"status": "pending"}
+        item.next_poll = time.monotonic() + AUTHORIZATION_POLL_INTERVAL
+        try:
+            session = await sessions.poll_session(fetch_cursor, item.label or "", item.flow, item.verifier)
+        except (RateLimited, requests.RequestException):
+            # 上游临时失败时浏览器确认仍可能到达，连续多次才放弃。
+            item.failures += 1
+            if item.failures < AUTHORIZATION_MAX_FAILURES:
+                item.next_poll = time.monotonic() + AUTHORIZATION_RETRY_DELAY
+                return {"status": "pending"}
+            _authorizations.pop(authorization_id, None)
+            raise HTTPException(503, "暂时无法连接 Cursor，请稍后重新授权。") from None
+        except Exception:
+            _authorizations.pop(authorization_id, None)
+            raise HTTPException(400, "无法领取桌面凭证，请重新在浏览器中授权。") from None
+        if session is None:
+            item.failures = 0
+            return {"status": "pending"}
+        # 领取结果只能用一次；轮询期间被取消时不保存。
+        if _authorizations.pop(authorization_id, None) is not item:
+            raise HTTPException(404, "授权已取消。")
+    return {"status": "completed", **await _complete_authorization(item, session, request)}
+
+
+@app.delete("/api/authorizations/{authorization_id}", status_code=204, dependencies=[Depends(require_token)])
+async def api_authorization_cancel(authorization_id: str):
+    _authorizations.pop(authorization_id, None)
+    return Response(status_code=204)
+
+
+async def _complete_authorization(item: BrowserAuthorization, session, request: Request | None) -> dict:
+    """Validate the issued desktop session and usage before committing the account."""
+    label = item.label or ""
     try:
-        session, email = await sessions.exchange_cookie(cookie, label, fetch_cursor)
+        identity = await fetch_cursor("", label, "desktop_me", session.token)
+        email = sessions.verify_identity(identity, email=item.expected_email, subject=session.subject)
         raw = await asyncio.gather(
             *(fetch_cursor("", label, name, session.token) for name in DESKTOP_ENDPOINTS),
             return_exceptions=True,
         )
-        errors = [item for item in raw if isinstance(item, BaseException)]
+        errors = [value for value in raw if isinstance(value, BaseException)]
         if not errors:
             sessions.verify_identity(raw[0], email=email, subject=session.subject)
+    except DesktopSessionError:
+        raise HTTPException(409, "浏览器中确认的 Cursor 账号与要重新授权的账号不一致，请在浏览器切换到该账号后重试。") from None
     except Exception as exc:
         errors = [exc]
     if errors:
-        kind, message = _classify(errors)
+        kind, _ = _classify(errors)
         if kind == "rate_limited":
-            # 这里最容易冤枉用户：过去 403 一律当失效，会让人反复重粘好 cookie
-            raise HTTPException(503, "Cursor 暂时限制了请求，等一两分钟再保存；cookie 可能是好的")
-        if kind == "expired":
-            raise HTTPException(400, "这个 cookie 是失效的，请在浏览器重新登录 cursor.com 后再回填")
-        raise HTTPException(400, "无法完成桌面授权或额度校验，请稍后重试。")
+            raise HTTPException(503, "Cursor 暂时限制了请求，请稍后重新授权。")
+        raise HTTPException(400, "无法完成桌面授权或额度校验，请稍后重新授权。")
 
     data = assemble_desktop(label, *raw)
+    # cookie 列只存不含凭证的授权标识：每次授权变化，使旧快照和明细缓存失效。
+    marker = "browser:" + secrets.token_hex(16)
     async with snapshot.lock_for(email):
         if request is not None:
             request.state.admin_session = await asyncio.to_thread(
                 admin.check_session, request.cookies.get(ADMIN_COOKIE, "")
             )
             require_token(request.headers.get("x-panel-token"), request)
-        acc = await asyncio.to_thread(
-            upsert_account, cookie, email, req.label,
-            req.department, session=session
-        )
-        snapshot.record_success(account_id(acc), cookie, data)
-    return {
-        "ok": True,
-        "label": acc["label"],
-        "email": acc.get("email"),
-        "department": acc.get("department") or "",
-    }
+        acc = await asyncio.to_thread(upsert_account, marker, email, item.label, item.department, session=session)
+        snapshot.record_success(account_id(acc), marker, data)
+    return {"label": acc["label"], "email": acc.get("email"), "department": acc.get("department") or ""}
 
 
 @app.post("/api/accounts/{account_key}/switch-command", dependencies=[Depends(require_token)])

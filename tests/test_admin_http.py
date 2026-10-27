@@ -15,6 +15,8 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 from urllib.parse import urlencode, urlsplit
 
+import requests
+
 from cursor_dashboard import admin, desktop, server, snapshot, store
 
 
@@ -49,6 +51,23 @@ def credential(marker: str, expires: int) -> desktop.DesktopSession:
                                   token("refresh", expires + 3600), "session")
 
 
+def browser_fetch(session: desktop.DesktopSession, data: dict):
+    """Synthetic Cursor: each login is pending on its first poll and confirmed on the next."""
+    polled = set()
+
+    async def fetch(_cookie, _label, name, *args):
+        if name == "desktop_poll":
+            if args[0] not in polled:
+                polled.add(args[0])
+                response = requests.Response()
+                response.status_code = 404
+                raise requests.HTTPError(response=response)
+            return {"accessToken": session.token, "refreshToken": session.refresh_token}
+        return data[name]
+
+    return fetch
+
+
 class AdminHTTPTest(unittest.IsolatedAsyncioTestCase):
     password = "test password strong 3bF!"
 
@@ -73,6 +92,8 @@ class AdminHTTPTest(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(snapshot._inflight.clear)
         server._switch_links.clear()
         self.addCleanup(server._switch_links.clear)
+        server._authorizations.clear()
+        self.addCleanup(server._authorizations.clear)
         self.cookies: dict[str, str] = {}
         self.csrf = ""
         self.expiry = int(time.time()) + 7200
@@ -151,6 +172,23 @@ class AdminHTTPTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 200, response.text)
         self.csrf = response.json()["csrf_token"]
         return response
+
+    async def authorize(self, *, data, headers=None, authenticated=True) -> Response:
+        """Start a browser authorization and poll until the synthetic confirmation completes."""
+        started = await self.request("POST", "/api/authorizations", data=data, headers=headers,
+                                     authenticated=authenticated)
+        if started.status_code != 200:
+            return started
+        key = started.json()["id"]
+        for _ in range(3):
+            pending = server._authorizations.get(key)
+            if pending:
+                pending.next_poll = 0
+            response = await self.request("POST", f"/api/authorizations/{key}/poll", headers=headers,
+                                          authenticated=authenticated)
+            if response.status_code != 200 or response.json()["status"] == "completed":
+                return response
+        self.fail("Browser authorization did not complete")
 
     async def save_policy(self, *, all_accounts=False, departments=None, account_ids=None):
         return await self.request("PUT", "/api/admin/switch-policy", headers={"X-Admin-CSRF": self.csrf},
@@ -594,15 +632,11 @@ class AdminHTTPTest(unittest.IsolatedAsyncioTestCase):
                 "desktop_limit": {"noUsageBasedAllowed": True},
             }
 
-            async def fetch(_cookie, _label, name, *_args):
-                return data[name]
-
-            with patch.object(server.sessions, "exchange_cookie", new_callable=AsyncMock,
-                              return_value=(session, email)), \
-                 patch.object(server, "fetch_cursor", side_effect=fetch):
-                response = await self.request("POST", "/api/accounts", authenticated=False,
-                                              data={"cookie": "submitted-cookie", "department": "Research"})
+            fetch = browser_fetch(session, data)
+            with patch.object(server, "fetch_cursor", side_effect=fetch):
+                response = await self.authorize(authenticated=False, data={"department": "Research"})
             self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(response.json()["status"], "completed")
             self.assertEqual(store.get_account(email)["department"], "Research")
             view = await self.request("GET", "/api/accounts/" + email, authenticated=False)
             self.assertTrue(view.json()["account"]["can_switch"])
@@ -619,24 +653,23 @@ class AdminHTTPTest(unittest.IsolatedAsyncioTestCase):
             "desktop_limit": {"noUsageBasedAllowed": True},
         }
 
-        async def exchange(*_args):
-            response = await self.request("POST", "/api/admin/logout", headers={"X-Admin-CSRF": self.csrf})
-            self.assertEqual(response.status_code, 200)
-            return session, email
+        confirmed = browser_fetch(session, data)
 
-        async def fetch(_cookie, _label, name, *_args):
-            return data[name]
+        async def fetch(cookie, label, name, *args):
+            if name == "desktop_me" and not logged_out:
+                # The admin session ends after the browser confirmed but before the account is saved.
+                logged_out.append(await self.request("POST", "/api/admin/logout", headers={"X-Admin-CSRF": self.csrf}))
+                self.assertEqual(logged_out[-1].status_code, 200)
+            return await confirmed(cookie, label, name, *args)
 
         for panel_token, expected_status in (("", 200), ("configured-panel-token", 401)):
+            logged_out = []
             with self.subTest(panel_token_enabled=bool(panel_token)), \
                  patch.object(server, "PANEL_TOKEN", panel_token), \
-                 patch.object(server.sessions, "exchange_cookie", side_effect=exchange), \
                  patch.object(server, "fetch_cursor", side_effect=fetch):
                 await self.login()
                 before = store.get_account(email)
-                response = await self.request("POST", "/api/accounts", headers={"X-Admin-CSRF": self.csrf},
-                                              data={"cookie": "replacement-cookie-" + panel_token,
-                                                    "department": "Research"})
+                response = await self.authorize(headers={"X-Admin-CSRF": self.csrf}, data={"department": "Research"})
                 self.assertEqual(response.status_code, expected_status, response.text)
                 saved = store.get_account(email)
                 if panel_token:

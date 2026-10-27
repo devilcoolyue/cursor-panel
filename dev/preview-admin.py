@@ -2,6 +2,10 @@
 
 Run: uv run python dev/preview-admin.py --port 8792
 Administrator password: preview-admin-password
+
+Browser authorization is synthetic: each login is pending on its first poll and
+confirmed on the next, as the subject named in the account label (for example
+``user_added``), otherwise ``user_preview_browser``. No request reaches Cursor.
 """
 
 from __future__ import annotations
@@ -10,6 +14,7 @@ import argparse
 import base64
 import json
 import os
+import re
 import sys
 import tempfile
 import time
@@ -72,12 +77,46 @@ def main():
 
         admin.initialize_admin(PASSWORD)
 
-        async def synthetic_fetch(_cookie, _label, name, *values):
+        import requests
+        confirmed_flows = set()
+        browser_subject = re.compile(r"(?:[a-z0-9-]+\|)?user_[A-Za-z0-9_]+")
+        cycle_start = now - 10 * 86400
+        browser_usage = {
+            "desktop_plan": {"planInfo": {"planName": "Pro", "includedAmountCents": 2000}},
+            "desktop_profile": {"membershipType": "pro"},
+            "desktop_period": {"billingCycleStart": cycle_start * 1000, "billingCycleEnd": (cycle_start + 30 * 86400) * 1000,
+                               "planUsage": {"autoPercentUsed": 28, "apiPercentUsed": 36, "totalPercentUsed": 32,
+                                             "totalSpend": 1600, "includedSpend": 1600}},
+            "desktop_grok": {"includedLimitZero": True},
+            "desktop_limit": {"noUsageBasedAllowed": True},
+        }
+
+        async def synthetic_fetch(_cookie, label, name, *values):
+            if name == "desktop_poll":
+                if values[0] not in confirmed_flows:
+                    confirmed_flows.add(values[0])
+                    response = requests.Response()
+                    response.status_code = 404
+                    raise requests.HTTPError("Browser login is not confirmed yet", response=response)
+                match = browser_subject.search(label or "")
+                subject = match.group(0) if match else "user_preview_browser"
+                subject = subject if "|" in subject else "auth0|" + subject
+                return {"accessToken": token(subject, now + 30 * 86400, "access"),
+                        "refreshToken": token(subject, now + 60 * 86400, "refresh")}
             if name == "desktop_me" and values:
                 account = next((item for item in store.load_accounts()
                                 if item["access_token"] == values[0]), None)
                 if account:
                     return {"email": account["email"], "authId": account["auth_subject"]}
+            try:
+                claims = desktop.token_claims(values[0]) if values else {}
+            except desktop.DesktopSessionError:
+                claims = {}
+            if claims.get("preview") and name == "desktop_me":
+                user = claims["sub"].split("|", 1)[-1]
+                return {"email": user.removeprefix("user_") + "@example.test", "authId": claims["sub"]}
+            if claims.get("preview") and name in browser_usage:
+                return browser_usage[name]
             raise RuntimeError("Preview outbound disabled")
 
         def preview_commands(session, email):
