@@ -17,7 +17,7 @@ from pathlib import Path
 
 import requests
 
-from cursor_dashboard.client import BASE, COOKIE_NAME, DESKTOP_BASE, UA
+from cursor_dashboard.client import BASE, COOKIE_NAME, CSRF_HEADER, DESKTOP_BASE, UA
 from cursor_dashboard.desktop import desktop_session, login_challenge, parse_session
 from cursor_dashboard.store import load_accounts
 
@@ -42,6 +42,10 @@ def request(method, url, *, cookie=None, token=None, body=None, params=None):
         if token:
             client.headers["Authorization"] = "Bearer " + token
         try:
+            if cookie and method != "GET" and url.startswith(BASE):
+                # cursor.com POST requires the double-submit CSRF token from this same jar.
+                csrf = client.get(BASE + "/api/csrf-token", allow_redirects=False, timeout=15)
+                client.headers[CSRF_HEADER] = csrf.json().get("token", "") if csrf.ok else ""
             response = client.request(method, url, json=body, params=params,
                                       allow_redirects=False, timeout=15)
         except requests.RequestException as exc:
