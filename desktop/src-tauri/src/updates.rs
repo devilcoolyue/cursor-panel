@@ -65,6 +65,100 @@ fn valid_asset(url: &str, version: &str) -> bool {
     })
 }
 
+struct LatestRelease {
+    version: Version,
+    notes: String,
+    published_at: Value,
+}
+
+fn stable_version(text: &str) -> Result<Version, String> {
+    let version = Version::parse(text).map_err(|_| "发布版本无效。")?;
+    if !version.pre.is_empty() || !version.build.is_empty() {
+        return Err("发布版本无效。".into());
+    }
+    Ok(version)
+}
+
+fn rate_limit_message(reset: Option<u64>, now: u64) -> String {
+    match reset.filter(|reset| *reset > now) {
+        Some(reset) => format!(
+            "GitHub 暂时限制了更新检查，请约 {} 分钟后重试。",
+            (reset - now).div_ceil(60)
+        ),
+        None => "GitHub 暂时限制了更新检查，请稍后重试。".into(),
+    }
+}
+
+async fn read_json(response: reqwest::Response) -> Result<Value, String> {
+    let body = response.bytes().await.map_err(|_| "无法读取更新信息。")?;
+    if body.len() > 262144 {
+        return Err("更新信息超过大小限制。".into());
+    }
+    serde_json::from_slice(&body).map_err(|_| "发布信息无效。".into())
+}
+
+/// The REST API provides release notes, but GitHub limits anonymous calls per IP address.
+/// When it refuses, the latest release's updater manifest still identifies the version;
+/// the update package itself is verified by the updater signature either way.
+async fn latest_release(client: &reqwest::Client) -> Result<Option<LatestRelease>, String> {
+    use reqwest::StatusCode;
+    let mut failure = "无法连接发布服务，请稍后重试。".to_string();
+    match client.get(LATEST).send().await {
+        Ok(response) if response.status() == StatusCode::NOT_FOUND => return Ok(None),
+        Ok(response) if response.status().is_success() => {
+            let release = read_json(response).await?;
+            let tag = release["tag_name"].as_str().ok_or("发布版本无效。")?;
+            let version = stable_version(tag.strip_prefix('v').ok_or("发布版本无效。")?)?;
+            if release["draft"] == true || release["prerelease"] == true {
+                return Err("发布版本无效。".into());
+            }
+            return Ok(Some(LatestRelease {
+                version,
+                notes: release["body"].as_str().unwrap_or("").into(),
+                published_at: release["published_at"].clone(),
+            }));
+        }
+        Ok(response) => {
+            let status = response.status();
+            failure = if status == StatusCode::FORBIDDEN || status == StatusCode::TOO_MANY_REQUESTS {
+                let reset = response
+                    .headers()
+                    .get("x-ratelimit-reset")
+                    .and_then(|value| value.to_str().ok())
+                    .and_then(|value| value.parse().ok());
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|elapsed| elapsed.as_secs())
+                    .unwrap_or(0);
+                rate_limit_message(reset, now)
+            } else {
+                "发布服务暂不可用，请稍后重试。".into()
+            };
+        }
+        Err(_) => {}
+    }
+    let manifest = match client
+        .get(format!("{RELEASES}/latest/download/latest.json"))
+        .send()
+        .await
+    {
+        Ok(response) if response.status() == StatusCode::NOT_FOUND => return Ok(None),
+        Ok(response) if response.status().is_success() => {
+            read_json(response).await.map_err(|_| failure.clone())?
+        }
+        _ => return Err(failure),
+    };
+    let version = manifest["version"]
+        .as_str()
+        .and_then(|text| stable_version(text.strip_prefix('v').unwrap_or(text)).ok())
+        .ok_or(failure)?;
+    Ok(Some(LatestRelease {
+        version,
+        notes: manifest["notes"].as_str().unwrap_or("").into(),
+        published_at: manifest["pub_date"].clone(),
+    }))
+}
+
 #[tauri::command]
 pub async fn check_update(app: tauri::AppHandle) -> Result<Value, String> {
     let state = app.state::<Updates>();
@@ -76,45 +170,18 @@ pub async fn check_update(app: tauri::AppHandle) -> Result<Value, String> {
         .user_agent("Cursor-Panel-Updates")
         .build()
         .map_err(|_| "无法建立更新连接。")?;
-    let response = client
-        .get(LATEST)
-        .send()
-        .await
-        .map_err(|_| "无法连接发布服务，请稍后重试。")?;
     let mut result = json!({"current_version": current.to_string(), "latest_version": null,
         "available": false, "installable": false, "notes": "", "release_url": RELEASES, "published_at": null});
-    if response.status() == reqwest::StatusCode::NOT_FOUND {
+    let Some(release) = latest_release(&client).await? else {
         return Ok(result);
-    }
-    let response = response
-        .error_for_status()
-        .map_err(|_| "发布服务暂不可用，请稍后重试。")?;
-    let body = response.bytes().await.map_err(|_| "无法读取更新信息。")?;
-    if body.len() > 262144 {
-        return Err("更新信息超过大小限制。".into());
-    }
-    let release: Value = serde_json::from_slice(&body).map_err(|_| "发布信息无效。")?;
-    let tag = release["tag_name"].as_str().ok_or("发布版本无效。")?;
-    let version = Version::parse(tag.strip_prefix('v').ok_or("发布版本无效。")?)
-        .map_err(|_| "发布版本无效。")?;
-    if !version.pre.is_empty()
-        || !version.build.is_empty()
-        || release["draft"] == true
-        || release["prerelease"] == true
-    {
-        return Err("发布版本无效。".into());
-    }
+    };
+    let version = release.version;
     let version_text = version.to_string();
     result["latest_version"] = json!(version_text);
     result["available"] = json!(version > current);
-    result["notes"] = json!(release["body"]
-        .as_str()
-        .unwrap_or("")
-        .chars()
-        .take(12000)
-        .collect::<String>());
+    result["notes"] = json!(release.notes.chars().take(12000).collect::<String>());
     result["release_url"] = json!(format!("{RELEASES}/tag/v{version}"));
-    result["published_at"] = release["published_at"].clone();
+    result["published_at"] = release.published_at;
     if version <= current {
         return Ok(result);
     }
@@ -226,6 +293,18 @@ mod tests {
             ] {
                 assert!(!valid_asset(url, "1.2.3"));
             }
+        }
+    }
+    #[test]
+    fn rate_limits_report_the_reset_wait_and_versions_are_stable() {
+        assert_eq!(rate_limit_message(Some(1_000 + 61), 1_000), "GitHub 暂时限制了更新检查，请约 2 分钟后重试。");
+        assert_eq!(rate_limit_message(Some(1_000 + 1), 1_000), "GitHub 暂时限制了更新检查，请约 1 分钟后重试。");
+        for reset in [None, Some(999)] {
+            assert_eq!(rate_limit_message(reset, 1_000), "GitHub 暂时限制了更新检查，请稍后重试。");
+        }
+        assert!(stable_version("0.0.11").is_ok());
+        for text in ["0.0.11-beta.1", "0.0.11+build", "latest"] {
+            assert!(stable_version(text).is_err());
         }
     }
 }
