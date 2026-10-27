@@ -21,8 +21,8 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr
 from ..application.queries import QueryFailure
 from ..application.security import digest
 from ..client import AuthExpired, RateLimited
-from ..desktop import CookieSessionError, DesktopSessionError
-from ..domain.core import (CoreError, Forbidden, NotFound, SecretError,
+from ..desktop import DesktopSessionError
+from ..domain.core import (AuthorizationRejected, CoreError, Forbidden, NotFound, SecretError,
                             Throttled, Unauthenticated)
 from ..infrastructure.persistence.policy import audit
 from ..switch_links import download_command
@@ -91,10 +91,10 @@ class AccountEdit(Input):
     quota_reference: QuotaReference | None = None
 
 
-class Authorization(Input):
-    cookie: SecretStr = Field(min_length=1, max_length=16384)
+class AuthorizationStart(Input):
     label: str | None = Field(default=None, min_length=1, max_length=256)
     tags: list[str] = Field(default_factory=list, max_length=100)
+    account_id: uuid.UUID | None = None
 
 
 class SwitchPlatform(Input):
@@ -241,9 +241,9 @@ def create_app(core, *, public_origin, web_dir=None, manual_switch_preview=False
         # FastAPI's default includes rejected input (including Cookie/password).
         return error_response(422, "Invalid request fields")
 
-    @app.exception_handler(CookieSessionError)
-    async def cookie_error(request, error):
-        return JSONResponse({"detail": str(error), "code": error.code}, status_code=422)
+    @app.exception_handler(AuthorizationRejected)
+    async def authorization_rejected(request, error):
+        return JSONResponse({"detail": str(error), "code": error.code}, status_code=error.status)
 
     async def provider_error(request, error):
         return error_response(502, "Provider request failed; retry or reauthorize the account")
@@ -445,18 +445,29 @@ def create_app(core, *, public_origin, web_dir=None, manual_switch_preview=False
     def account(workspace_id: uuid.UUID, account_id: uuid.UUID, actor=Depends(current_actor)):
         return core.accounts.get(actor, str(workspace_id), str(account_id))
 
-    @app.post("/api/v1/workspaces/{workspace_id}/accounts", status_code=201, response_model=dto.AccountView,
-              responses={422: {"model": dto.AuthorizationError}})
-    async def authorize_account(workspace_id: uuid.UUID, body: Authorization, actor=Depends(current_actor)):
-        return await core.accounts.authorize(actor, str(workspace_id), body.cookie.get_secret_value(),
-                                             label=body.label, tags=body.tags)
+    @app.post("/api/v1/workspaces/{workspace_id}/accounts", include_in_schema=False)
+    @app.post("/api/v1/workspaces/{workspace_id}/accounts/{account_id}/authorization", include_in_schema=False)
+    def cookie_authorization():
+        # Clients before 0.0.11 submit web cookies; Cursor rejects that exchange outside the browser.
+        return JSONResponse({"detail": "Cookie authorization is no longer supported; authorize in the browser",
+                             "code": "cookie_authorization_unsupported"}, status_code=410)
 
-    @app.post("/api/v1/workspaces/{workspace_id}/accounts/{account_id}/authorization", response_model=dto.AccountView,
-              responses={422: {"model": dto.AuthorizationError}})
-    async def reauthorize_account(workspace_id: uuid.UUID, account_id: uuid.UUID, body: Authorization,
-                                  actor=Depends(current_actor)):
-        return await core.accounts.authorize(actor, str(workspace_id), body.cookie.get_secret_value(),
-                                             label=body.label, tags=body.tags, account_id=str(account_id))
+    @app.post("/api/v1/workspaces/{workspace_id}/authorizations", status_code=201,
+              response_model=dto.AuthorizationStarted)
+    async def start_authorization(workspace_id: uuid.UUID, body: AuthorizationStart, actor=Depends(current_actor)):
+        return await core.accounts.begin_authorization(actor, str(workspace_id), label=body.label, tags=body.tags,
+            account_id=str(body.account_id) if body.account_id else None)
+
+    @app.post("/api/v1/workspaces/{workspace_id}/authorizations/{authorization_id}/poll",
+              response_model=dto.AuthorizationProgress,
+              responses={409: {"model": dto.AuthorizationError}, 422: {"model": dto.AuthorizationError}})
+    async def poll_authorization(workspace_id: uuid.UUID, authorization_id: uuid.UUID, actor=Depends(current_actor)):
+        return await core.accounts.poll_authorization(actor, str(workspace_id), str(authorization_id))
+
+    @app.delete("/api/v1/workspaces/{workspace_id}/authorizations/{authorization_id}", status_code=204)
+    async def cancel_authorization(workspace_id: uuid.UUID, authorization_id: uuid.UUID, actor=Depends(current_actor)):
+        core.accounts.cancel_authorization(actor, str(workspace_id), str(authorization_id))
+        return Response(status_code=204)
 
     @app.patch("/api/v1/workspaces/{workspace_id}/accounts/{account_id}", response_model=dto.AccountView)
     def edit_account(workspace_id: uuid.UUID, account_id: uuid.UUID, body: AccountEdit, actor=Depends(current_actor)):
@@ -558,8 +569,9 @@ def create_app(core, *, public_origin, web_dir=None, manual_switch_preview=False
         return Response(status_code=204)
 
     if _local is not None:
-        allowed = {"bootstrap", "me", "accounts", "account", "authorize_account", "reauthorize_account",
-                   "edit_account", "delete_account", "refresh", "detail", "workspace_audit", "health"}
+        allowed = {"bootstrap", "me", "accounts", "account", "start_authorization", "poll_authorization",
+                   "cancel_authorization", "edit_account", "delete_account", "refresh", "detail", "workspace_audit",
+                   "health"}
         app.router.routes[:] = [route for route in app.router.routes if route.name in allowed]
         return app
 

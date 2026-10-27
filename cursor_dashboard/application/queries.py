@@ -18,7 +18,7 @@ def classify(errors):
     if any(isinstance(e, RateLimited) for e in errors):
         return "rate_limited", "Cursor 暂时限制了请求，稍后会自动重试"
     if any(isinstance(e, AuthExpired) for e in errors):
-        return "expired", "桌面授权已失效，请重新粘贴有效 Cookie 授权"
+        return "expired", "桌面授权已失效，请重新授权"
     if any(isinstance(e, requests.Timeout) for e in errors):
         return "network", "连接 Cursor 超时，稍后会自动重试"
     if any(isinstance(e, requests.ConnectionError) for e in errors):

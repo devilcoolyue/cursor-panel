@@ -291,10 +291,15 @@ class NativeConnectionTest(unittest.TestCase):
         for origin in ("http://example.test", "https://name:password@example.test", "https://example.test/path", "file:///etc/passwd"):
             with self.assertRaises(Exception):
                 self.connections.add("Bad", origin)
+        space, item = f"/api/v1/workspaces/{uuid.uuid4()}", uuid.uuid4()
         for path in ("/api/v1/manual-switch/consume", "/api/v1/device-switch/consume", "/api/v1/auth/devices/exchange",
-                     "https://evil.test/api/v1/me", "/api/v1/../native/recover", "/api/v1/me?url=https://evil.test"):
+                     "https://evil.test/api/v1/me", "/api/v1/../native/recover", "/api/v1/me?url=https://evil.test",
+                     f"{space}/accounts", f"{space}/accounts/{item}/authorization", f"{space}/authorizations/x/poll"):
             with self.assertRaises(Conflict):
                 public_route("POST", path)
+        for method, path in (("POST", f"{space}/authorizations"), ("POST", f"{space}/authorizations/{item}/poll"),
+                             ("DELETE", f"{space}/authorizations/{item}")):
+            self.assertEqual(public_route(method, path), path)
         self.connect()
         self.info["api_version"] = 2
         with self.assertRaises(RemoteError) as raised:

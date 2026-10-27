@@ -2,12 +2,12 @@ import assert from 'node:assert/strict'
 import { fileURLToPath } from 'node:url'
 
 export async function verifyQuotaReferences(page) {
-  const claims = Buffer.from(JSON.stringify({ sub: 'auth0|user_quota_capped', type: 'session', exp: Math.floor(Date.now() / 1000) + 7 * 86400 })).toString('base64url')
+  // The synthetic browser confirms as the exhausted-quota subject named in the label.
+  const label = '额度参考测试 user_quota_capped'
   await page.getByRole('button', { name: /添加账号/ }).click()
-  await page.getByLabel('账号名称', { exact: true }).fill('额度参考测试')
-  await page.getByLabel('Cursor 网页会话 Cookie', { exact: true }).fill(`user_quota_capped::eyJhbGciOiJIUzI1NiJ9.${claims}.synthetic`)
-  await page.getByRole('button', { name: '保存', exact: true }).click()
-  const card = page.locator('[data-account]').filter({ has: page.getByRole('heading', { name: '额度参考测试', exact: true }) })
+  await page.getByLabel('账号名称', { exact: true }).fill(label)
+  await page.getByRole('button', { name: '在浏览器中授权', exact: true }).click()
+  const card = page.locator('[data-account]').filter({ has: page.getByRole('heading', { name: label, exact: true }) })
   await card.waitFor()
   const statsBefore = await card.locator('.card-meta dd').first().getAttribute('title')
   async function edit() {

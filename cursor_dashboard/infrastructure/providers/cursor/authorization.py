@@ -1,9 +1,15 @@
 """Cursor authorization protocol; no persistence or runtime configuration."""
 from __future__ import annotations
 import asyncio
+from urllib.parse import urlencode
 import requests
 from ....client import AuthExpired
-from ....desktop import DesktopSessionError, SUBJECT, USER_ID, desktop_session, login_challenge, parse_session
+from ....desktop import (DesktopSessionError, SUBJECT, USER_ID, desktop_session, login_challenge, parse_session,
+                         token_claims)
+
+# The browser confirms this page itself, so Cursor's CSRF and risk checks run
+# where they are designed to; the panel never submits the web callback.
+LOGIN_URL = "https://cursor.com/loginDeepControl"
 
 
 def _profile_subject_matches(actual, expected):
@@ -30,6 +36,7 @@ def verify_identity(data, *, email=None, subject=None):
 
 
 async def exchange_cookie(cookie, label, fetch, *, expected_email=None):
+    """Legacy V1 cookie exchange. Cursor's browser risk check now rejects its web callback."""
     source = parse_session(cookie)
     me = await fetch(cookie, label, "me")
     email = verify_identity(me, email=expected_email, subject=source.subject)
@@ -49,3 +56,21 @@ async def exchange_cookie(cookie, label, fetch, *, expected_email=None):
     identity = await fetch("", label, "desktop_me", session.token)
     verify_identity(identity, email=email, subject=session.subject)
     return session, email
+
+
+def login_url(flow, challenge):
+    return LOGIN_URL + "?" + urlencode({"challenge": challenge, "uuid": flow, "mode": "login"})
+
+
+async def poll_session(fetch, label, flow, verifier):
+    """Return the issued desktop session, or None while the browser has not confirmed."""
+    try:
+        data = await fetch("", label, "desktop_poll", flow, verifier)
+    except requests.HTTPError as exc:
+        if exc.response is not None and exc.response.status_code == 404:
+            return None
+        raise
+    subject = token_claims(data.get("accessToken") if isinstance(data, dict) else None).get("sub")
+    if not isinstance(subject, str) or not SUBJECT.fullmatch(subject):
+        raise DesktopSessionError("Cursor 返回的桌面凭证身份无效。")
+    return desktop_session(data, subject)

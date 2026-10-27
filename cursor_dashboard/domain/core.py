@@ -28,6 +28,13 @@ class Conflict(CoreError):
     pass
 
 
+class AuthorizationRejected(Conflict):
+    """An authorization outcome the user can act on; `code` selects the public message."""
+    def __init__(self, message, code, status=409):
+        super().__init__(message)
+        self.code, self.status = code, status
+
+
 class Locked(CoreError):
     pass
 

@@ -76,9 +76,11 @@ API 不开启跨域请求。响应使用 `Cache-Control: no-store`。错误不�
 | `/workspaces/{w}/invitations` | POST 创建 / GET 有效邀请；原票据只在创建时返回 |
 | `/workspaces/{w}/invitations/{id}` | DELETE 撤销邀请 |
 | `/invitations/accept` | POST 票据；新用户提供密码，已有用户须先登录 |
-| `/workspaces/{w}/accounts` | GET 可见账号、统计及标签计数；POST 新授权 |
+| `/workspaces/{w}/accounts` | GET 可见账号、统计及标签计数；POST 旧 Cookie 授权已停用，返回 410 |
 | `/workspaces/{w}/accounts/{a}` | GET / PATCH label、tags / DELETE |
-| `/workspaces/{w}/accounts/{a}/authorization` | POST 明确重新授权 |
+| `/workspaces/{w}/authorizations` | POST `{label?, tags?, account_id?}` 开始浏览器授权，返回 Cursor 确认链接；带 `account_id` 为重新授权 |
+| `/workspaces/{w}/authorizations/{id}/poll` | POST 查询一次确认结果：`pending`，或 `completed` 并返回账号；仅发起人可用 |
+| `/workspaces/{w}/authorizations/{id}` | DELETE 取消未完成的授权 |
 | `/workspaces/{w}/accounts/{a}/refresh`、`…/detail` | POST 手工刷新 / GET 明细 |
 | `/workspaces/{w}/accounts/{a}/grants` | GET 账号授权列表 |
 | `/workspaces/{w}/accounts/{a}/grants/{user_id}` | PUT `{level: view或use}` / DELETE 收回 |

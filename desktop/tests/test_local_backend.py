@@ -1,7 +1,6 @@
 """Real private HTTP and packaged OS key-store persistence using owned temporary data."""
 from __future__ import annotations
 import json
-import base64
 import faulthandler
 import os
 from pathlib import Path
@@ -99,23 +98,33 @@ class LocalBackendTest(unittest.TestCase):
             self.child.stdout.close()
             self.child.stderr.close()
 
-    def test_oauth_import_through_packaged_backend(self):
+    def test_oauth_browser_authorization_through_packaged_backend(self):
         status, me = self.request('/api/v1/me')
         self.assertEqual(status, 200)
         workspace = me['workspaces'][0]['id']
-        subject = 'google-oauth2|user_packaged_oauth'
-        claims = {'sub': subject, 'type': 'web', 'exp': int(time.time()) + 3600}
-        payload = base64.urlsafe_b64encode(json.dumps(claims).encode()).decode().rstrip('=')
-        cookie = f'user_packaged_oauth%3A%3AeyJhbGciOiJIUzI1NiJ9.{payload}.synthetic'
-        path = f'/api/v1/workspaces/{workspace}/accounts'
-        status, account = self.request(path, 'POST', {'cookie': cookie, 'label': 'Packaged OAuth'})
-        self.assertEqual(status, 201, account)
+        path = f'/api/v1/workspaces/{workspace}/authorizations'
+        # The fixture browser confirms as the OAuth subject named in the label.
+        label = 'Packaged OAuth google-oauth2|user_packaged_oauth'
+
+        def authorize(body):
+            status, started = self.request(path, 'POST', body)
+            self.assertEqual(status, 201, started)
+            self.assertTrue(started['login_url'].startswith('https://cursor.com/loginDeepControl?'))
+            for _ in range(20):
+                status, progress = self.request(f"{path}/{started['id']}/poll", 'POST')
+                self.assertEqual(status, 200, progress)
+                if progress['status'] == 'completed':
+                    return progress['account']
+                time.sleep(.5)
+            self.fail('Browser authorization did not complete')
+
+        account = authorize({'label': label})
         self.assertEqual(account['email'], 'packaged_oauth@example.test')
         self.assertIsNotNone(account['data'])
-        self.assertNotIn(cookie, json.dumps(account))
-        status, refreshed = self.request(f"{path}/{account['id']}/authorization", 'POST', {'cookie': cookie})
-        self.assertEqual(status, 200, refreshed)
+        refreshed = authorize({'label': label, 'account_id': account['id']})
         self.assertNotEqual(account['authorization_generation'], refreshed['authorization_generation'])
+        status, retired = self.request(f'/api/v1/workspaces/{workspace}/accounts', 'POST', {'cookie': 'retired'})
+        self.assertEqual(status, 405, retired)
 
     def cleanup(self):
         if self.child.poll() is None:

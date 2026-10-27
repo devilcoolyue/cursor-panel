@@ -8,8 +8,8 @@ import time
 from sqlalchemy import delete, func, or_, select, text
 from sqlalchemy.dialects.sqlite import insert
 
-from ...domain.core import (AccountRef, AuthorizedAccount, Conflict, NotFound,
-                            SecretError)
+from ...domain.core import (AccountRef, AuthorizationRejected, AuthorizedAccount, Conflict,
+                            NotFound, SecretError)
 from ...pools import retain_own_limits, set_reference_limits
 from .policy import audit, authorize, capabilities, membership
 from .models import (Account, AccountTag, Credential, Grant, Lease, LegacyImport,
@@ -121,7 +121,8 @@ class Repository:
                     Account.provider == "cursor", or_(Account.email == email if email else False,
                                                       Account.provider_subject == subject if subject else False)))
                 if duplicate:
-                    raise Conflict("Account already exists in this workspace; use explicit reauthorization")
+                    raise AuthorizationRejected("Account already exists in this workspace; use explicit reauthorization",
+                                                "account_exists")
                 account = Account(workspace_id=workspace_id, label=label or email or "Account",
                                   email=email, provider_subject=subject)
                 session.add(account)

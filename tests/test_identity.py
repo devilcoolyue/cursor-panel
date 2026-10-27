@@ -391,11 +391,12 @@ class SwitchAndRaceTest(IdentityFixture, unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(Unauthenticated):
             await waiting
 
-    async def test_unauthorized_cookie_cannot_call_provider_or_overwrite_same_email(self):
+    async def test_unauthorized_member_cannot_start_browser_authorization(self):
         account = self.account()
         member = self.join()
         self.spaces.set_grant(self.actor, self.first, account.ref.account_id, member.user_id, "use")
         for account_id in (None, account.ref.account_id):
             with self.assertRaises(Forbidden):
-                await self.core.accounts.authorize(member, self.first, "forbidden-cookie", account_id=account_id)
+                await self.core.accounts.begin_authorization(member, self.first, account_id=account_id)
+        self.assertEqual(self.core.accounts._authorizations, {})
         self.assertEqual(self.repo.authorized(self.first, account.ref.account_id).ref, account.ref)

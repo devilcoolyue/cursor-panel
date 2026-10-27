@@ -482,6 +482,33 @@ console.log(process.argv[2]);
         self.assertNotIn('✓ [4/5]', result.stdout)
 
 
+class CliBrowserLoginTest(unittest.IsolatedAsyncioTestCase):
+    async def test_temporary_query_waits_for_browser_confirmation_without_cookie(self):
+        from functools import partial
+        from urllib.parse import urlsplit
+        from cursor_dashboard import cli
+        session, calls, opened = valid_desktop_session(), [], []
+        def fetch(cookie, label, name, *args):
+            calls.append((cookie, name))
+            if name == 'desktop_poll':
+                if calls.count(('', 'desktop_poll')) == 1:
+                    response = requests.Response()
+                    response.status_code = 404
+                    raise requests.HTTPError(response=response)
+                return {'accessToken': session.token, 'refreshToken': session.refresh_token}
+            if name == 'desktop_me':
+                return {'email': 'test@example.test', 'authId': session.subject}
+            return {}
+        with patch.object(cli, 'fetch_one', side_effect=fetch), patch.object(cli, 'REQUEST_MIN_INTERVAL', 0):
+            results, failed = await cli.query_accounts([{'label': 'Temporary', 'cookie': 'ignored-legacy-cookie'}],
+                temporary=True, login=partial(cli.browser_login, open_browser=opened.append, interval=0))
+        self.assertEqual(failed, 0, results)
+        self.assertEqual(results[0]['email'], 'test@example.test')
+        self.assertEqual(urlsplit(opened[0])[1:3], ('cursor.com', '/loginDeepControl'))
+        self.assertEqual({cookie for cookie, _ in calls}, {''})
+        self.assertFalse({'me', 'desktop_callback'} & {name for _, name in calls})
+
+
 class DesktopClientTest(unittest.TestCase):
     def test_callback_accepts_plain_success_without_sending_verifier(self):
         client = CursorClient('web-cookie')

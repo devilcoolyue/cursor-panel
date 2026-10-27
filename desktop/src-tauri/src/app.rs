@@ -315,8 +315,9 @@ enum AccountOperation {
     Me,
     List,
     Get,
-    Add,
-    Reauthorize,
+    Authorize,
+    AuthorizationPoll,
+    AuthorizationCancel,
     Edit,
     Delete,
     Refresh,
@@ -335,6 +336,7 @@ fn account_route(
     operation: AccountOperation,
     workspace: Option<String>,
     account: Option<String>,
+    authorization: Option<String>,
     query: Query,
 ) -> Result<(&'static str, String), String> {
     use AccountOperation::*;
@@ -347,7 +349,15 @@ fn account_route(
     let base = format!("/api/v1/workspaces/{workspace}");
     let (method, path) = match operation {
         List => ("GET", format!("{base}/accounts")),
-        Add => ("POST", format!("{base}/accounts")),
+        Authorize => ("POST", format!("{base}/authorizations")),
+        AuthorizationPoll => (
+            "POST",
+            format!("{base}/authorizations/{}/poll", identifier(authorization)?),
+        ),
+        AuthorizationCancel => (
+            "DELETE",
+            format!("{base}/authorizations/{}", identifier(authorization)?),
+        ),
         Audit => ("GET", format!("{base}/audit")),
         other => {
             let id = identifier(account)?;
@@ -356,7 +366,6 @@ fn account_route(
                 Get => ("GET", base),
                 Edit => ("PATCH", base),
                 Delete => ("DELETE", base),
-                Reauthorize => ("POST", format!("{base}/authorization")),
                 Refresh => ("POST", format!("{base}/refresh")),
                 Detail => ("GET", format!("{base}/detail")),
                 _ => return Err("Unknown operation".into()),
@@ -404,16 +413,65 @@ async fn account_request(
     operation: AccountOperation,
     workspace: Option<String>,
     account: Option<String>,
+    authorization: Option<String>,
     query: Option<Query>,
     body: Option<Value>,
     connection_id: Option<String>,
 ) -> Result<Value, String> {
-    let (method, route) = account_route(operation, workspace, account, query.unwrap_or_default())?;
+    let (method, route) = account_route(
+        operation,
+        workspace,
+        account,
+        authorization,
+        query.unwrap_or_default(),
+    )?;
     tauri::async_runtime::spawn_blocking(move || {
         connected::request(&app, connection_id, method, &route, body)
     })
     .await
     .map_err(|_| "Native request failed")?
+}
+/// Accept only Cursor's desktop login confirmation page; its PKCE verifier stays in the backend.
+fn cursor_login_url(url: &str) -> Result<String, String> {
+    let parsed = reqwest::Url::parse(url).map_err(|_| "Invalid login address")?;
+    let safe = |value: &str| {
+        !value.is_empty()
+            && value.len() <= 128
+            && value
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || b"-_".contains(&c))
+    };
+    let pairs: Vec<_> = parsed.query_pairs().collect();
+    let keys: std::collections::BTreeSet<_> = pairs.iter().map(|(key, _)| key.as_ref()).collect();
+    if parsed.scheme() != "https"
+        || parsed.host_str() != Some("cursor.com")
+        || parsed.port().is_some()
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.path() != "/loginDeepControl"
+        || parsed.fragment().is_some()
+        || pairs.len() != 3
+        || keys != ["challenge", "mode", "uuid"].into_iter().collect()
+        || !pairs.iter().all(|(_, value)| safe(value))
+    {
+        return Err("Invalid login address".into());
+    }
+    Ok(parsed.to_string())
+}
+#[tauri::command]
+fn open_cursor_login(url: String) -> Result<(), String> {
+    let url = cursor_login_url(&url)?;
+    #[cfg(target_os = "macos")]
+    let result = std::process::Command::new("open").arg(&url).spawn();
+    #[cfg(target_os = "windows")]
+    let result = std::process::Command::new("rundll32.exe")
+        .args(["url.dll,FileProtocolHandler", &url])
+        .spawn();
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let result = std::process::Command::new("xdg-open").arg(&url).spawn();
+    result
+        .map(|_| ())
+        .map_err(|_| "无法打开浏览器，请复制授权链接到浏览器中打开。".into())
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -714,6 +772,7 @@ pub fn run() {
             desktop_request,
             desktop_archive,
             desktop_open_backups,
+            open_cursor_login,
             connected::connection_request,
             connected::remote_manage,
             crate::updates::check_update,
@@ -760,6 +819,7 @@ mod tests {
             AccountOperation::Get,
             Some("http://example.test".into()),
             None,
+            None,
             Query::default()
         )
         .is_err());
@@ -768,12 +828,33 @@ mod tests {
             AccountOperation::Get,
             Some(id.clone()),
             Some("../native/recover".into()),
+            None,
             Query::default()
         )
         .is_err());
+        assert!(account_route(
+            AccountOperation::AuthorizationPoll,
+            Some(id.clone()),
+            None,
+            Some("../../accounts".into()),
+            Query::default()
+        )
+        .is_err());
+        assert_eq!(
+            account_route(
+                AccountOperation::AuthorizationCancel,
+                Some(id.clone()),
+                None,
+                Some(id.clone()),
+                Query::default()
+            )
+            .unwrap(),
+            ("DELETE", format!("/api/v1/workspaces/{id}/authorizations/{id}"))
+        );
         let (_, path) = account_route(
             AccountOperation::List,
             Some(id),
+            None,
             None,
             Query {
                 q: Some("&admin=true#".into()),
@@ -782,5 +863,24 @@ mod tests {
         )
         .unwrap();
         assert!(path.ends_with("?q=%26admin%3Dtrue%23"));
+    }
+    #[test]
+    fn browser_login_opens_only_cursor_confirmation_pages() {
+        let valid = "https://cursor.com/loginDeepControl?challenge=abc_DEF-1&uuid=0f8fad5b-d9cb-469f-a165-70867728950e&mode=login";
+        assert_eq!(cursor_login_url(valid).unwrap(), valid);
+        for url in [
+            "http://cursor.com/loginDeepControl?challenge=a&uuid=b&mode=login",
+            "https://cursor.com.evil.test/loginDeepControl?challenge=a&uuid=b&mode=login",
+            "https://user@cursor.com/loginDeepControl?challenge=a&uuid=b&mode=login",
+            "https://cursor.com:8443/loginDeepControl?challenge=a&uuid=b&mode=login",
+            "https://cursor.com/settings?challenge=a&uuid=b&mode=login",
+            "https://cursor.com/loginDeepControl?challenge=a&uuid=b&mode=login#x",
+            "https://cursor.com/loginDeepControl?challenge=a&uuid=b&mode=login&next=https://evil.test",
+            "https://cursor.com/loginDeepControl?challenge=a&challenge=b&mode=login",
+            "https://cursor.com/loginDeepControl?challenge=a%20b&uuid=b&mode=login",
+            "file:///etc/passwd",
+        ] {
+            assert!(cursor_login_url(url).is_err(), "{url}");
+        }
     }
 }

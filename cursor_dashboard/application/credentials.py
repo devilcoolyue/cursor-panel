@@ -6,9 +6,8 @@ import secrets
 import time
 
 from ..client import AuthExpired
-from ..desktop import DesktopSessionError, refreshed_session
+from ..desktop import refreshed_session
 from ..domain.core import AccountRepository, Conflict, Secrets
-from ..infrastructure.providers.cursor.authorization import exchange_cookie
 
 
 class CredentialService:
@@ -52,14 +51,13 @@ class CredentialService:
             if self.usable(account, rejected_token):
                 return account
             try:
-                if account.secrets.refresh_token:
-                    raw = await self.gateway("", account.label, "desktop_refresh", account.secrets.refresh_token)
-                    if isinstance(raw, dict) and raw.get("shouldLogout") is True:
-                        raise AuthExpired("Desktop authorization has been revoked")
-                    renewed = refreshed_session(raw, account.subject or "")
-                else:
-                    renewed, _ = await exchange_cookie(account.secrets.cookie, account.label, self.gateway,
-                                                        expected_email=account.email)
+                if not account.secrets.refresh_token:
+                    # Cursor no longer exchanges web cookies outside the browser.
+                    raise AuthExpired("Legacy cookie requires browser reauthorization")
+                raw = await self.gateway("", account.label, "desktop_refresh", account.secrets.refresh_token)
+                if isinstance(raw, dict) and raw.get("shouldLogout") is True:
+                    raise AuthExpired("Desktop authorization has been revoked")
+                renewed = refreshed_session(raw, account.subject or "")
                 payload = Secrets(account.secrets.cookie, renewed.token, renewed.refresh_token)
                 saved = await asyncio.to_thread(repo.rotate, account, payload, renewed.expires_at,
                                                 lease_owner=owner, subject=renewed.subject)
@@ -68,10 +66,6 @@ class CredentialService:
                                                 lease_owner=owner, invalid=True)
                 if saved:
                     raise
-            except DesktopSessionError:
-                if not account.secrets.refresh_token:
-                    raise AuthExpired("Legacy cookie requires reauthorization") from None
-                raise
             current = await asyncio.to_thread(repo.authorized, workspace_id, account_id)
             if current.invalid:
                 raise AuthExpired("Desktop authorization has been revoked")

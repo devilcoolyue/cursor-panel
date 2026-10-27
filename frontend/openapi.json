@@ -911,54 +911,6 @@
             }
           }
         }
-      },
-      "post": {
-        "summary": "Authorize Account",
-        "operationId": "authorize_account_api_v1_workspaces__workspace_id__accounts_post",
-        "parameters": [
-          {
-            "name": "workspace_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "format": "uuid",
-              "title": "Workspace Id"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/Authorization"
-              }
-            }
-          }
-        },
-        "responses": {
-          "201": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AccountView"
-                }
-              }
-            }
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AuthorizationError"
-                }
-              }
-            },
-            "description": "Unprocessable Entity"
-          }
-        }
       }
     },
     "/api/v1/workspaces/{workspace_id}/accounts/{account_id}": {
@@ -1110,10 +1062,60 @@
         }
       }
     },
-    "/api/v1/workspaces/{workspace_id}/accounts/{account_id}/authorization": {
+    "/api/v1/workspaces/{workspace_id}/authorizations": {
       "post": {
-        "summary": "Reauthorize Account",
-        "operationId": "reauthorize_account_api_v1_workspaces__workspace_id__accounts__account_id__authorization_post",
+        "summary": "Start Authorization",
+        "operationId": "start_authorization_api_v1_workspaces__workspace_id__authorizations_post",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Workspace Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AuthorizationStart"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthorizationStarted"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/workspaces/{workspace_id}/authorizations/{authorization_id}/poll": {
+      "post": {
+        "summary": "Poll Authorization",
+        "operationId": "poll_authorization_api_v1_workspaces__workspace_id__authorizations__authorization_id__poll_post",
         "parameters": [
           {
             "name": "workspace_id",
@@ -1126,36 +1128,36 @@
             }
           },
           {
-            "name": "account_id",
+            "name": "authorization_id",
             "in": "path",
             "required": true,
             "schema": {
               "type": "string",
               "format": "uuid",
-              "title": "Account Id"
+              "title": "Authorization Id"
             }
           }
         ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/Authorization"
-              }
-            }
-          }
-        },
         "responses": {
           "200": {
             "description": "Successful Response",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/AccountView"
+                  "$ref": "#/components/schemas/AuthorizationProgress"
                 }
               }
             }
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthorizationError"
+                }
+              }
+            },
+            "description": "Conflict"
           },
           "422": {
             "content": {
@@ -1166,6 +1168,49 @@
               }
             },
             "description": "Unprocessable Entity"
+          }
+        }
+      }
+    },
+    "/api/v1/workspaces/{workspace_id}/authorizations/{authorization_id}": {
+      "delete": {
+        "summary": "Cancel Authorization",
+        "operationId": "cancel_authorization_api_v1_workspaces__workspace_id__authorizations__authorization_id__delete",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Workspace Id"
+            }
+          },
+          {
+            "name": "authorization_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Authorization Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
           }
         }
       }
@@ -2387,16 +2432,70 @@
         ],
         "title": "AuditView"
       },
-      "Authorization": {
+      "AuthorizationError": {
         "properties": {
-          "cookie": {
+          "detail": {
             "type": "string",
-            "maxLength": 16384,
-            "minLength": 1,
-            "format": "password",
-            "title": "Cookie",
-            "writeOnly": true
+            "title": "Detail"
           },
+          "code": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "cookie_authorization_unsupported",
+                  "authorization_expired",
+                  "authorization_account_mismatch",
+                  "account_exists"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Code"
+          }
+        },
+        "type": "object",
+        "required": [
+          "detail"
+        ],
+        "title": "AuthorizationError"
+      },
+      "AuthorizationProgress": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "completed"
+            ],
+            "title": "Status"
+          },
+          "expires_at": {
+            "type": "integer",
+            "title": "Expires At"
+          },
+          "account": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AccountView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "status",
+          "expires_at"
+        ],
+        "title": "AuthorizationProgress"
+      },
+      "AuthorizationStart": {
+        "properties": {
           "label": {
             "anyOf": [
               {
@@ -2417,42 +2516,46 @@
             "type": "array",
             "maxItems": 100,
             "title": "Tags"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "cookie"
-        ],
-        "title": "Authorization"
-      },
-      "AuthorizationError": {
-        "properties": {
-          "detail": {
-            "type": "string",
-            "title": "Detail"
           },
-          "code": {
+          "account_id": {
             "anyOf": [
               {
                 "type": "string",
-                "enum": [
-                  "invalid_session_cookie",
-                  "cookie_account_mismatch"
-                ]
+                "format": "uuid"
               },
               {
                 "type": "null"
               }
             ],
-            "title": "Code"
+            "title": "Account Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "AuthorizationStart"
+      },
+      "AuthorizationStarted": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "login_url": {
+            "type": "string",
+            "title": "Login Url"
+          },
+          "expires_at": {
+            "type": "integer",
+            "title": "Expires At"
           }
         },
         "type": "object",
         "required": [
-          "detail"
+          "id",
+          "login_url",
+          "expires_at"
         ],
-        "title": "AuthorizationError"
+        "title": "AuthorizationStarted"
       },
       "Bootstrap": {
         "properties": {

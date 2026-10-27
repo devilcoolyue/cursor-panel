@@ -8,5 +8,10 @@ export const currentRelease = { current_version: version, latest_version: versio
 export async function fixtureContext(browser, options) {
   const context = await browser.newContext(options)
   await context.route('**/api/v1/updates', route => route.fulfill({ json: currentRelease }))
+  // Browser authorization opens Cursor's confirmation page; record and close it without contacting cursor.com.
+  context.cursorLogins = []
+  await context.route('https://cursor.com/**', route => route.fulfill({ contentType: 'text/html', body: '<title>Cursor login fixture</title>' }))
+  context.on('page', page => page.waitForURL(/^https:\/\/cursor\.com\/loginDeepControl\?/, { timeout: 15000 })
+    .then(() => { context.cursorLogins.push(page.url()); return page.close() }).catch(() => {}))
   return context
 }

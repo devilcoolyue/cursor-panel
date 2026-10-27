@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, patch
 import requests
 
 from cursor_dashboard.api.app import create_app
+from cursor_dashboard.client import AuthExpired
 from cursor_dashboard.desktop import DesktopSessionError
 from test_core import data
 from test_desktop import cookie_for
@@ -79,24 +80,39 @@ class V2HTTPTest(IdentityFixture, unittest.IsolatedAsyncioTestCase):
         self.account_row = self.account(snapshot=data(42))
         self.path = f"/api/v1/workspaces/{self.first}/accounts"
 
-    async def test_cookie_errors_are_422_and_provider_errors_remain_sanitized_502(self):
+    async def test_cookie_routes_are_retired_and_browser_errors_remain_sanitized(self):
         await self.client.login()
-        cases = [(cookie_for(sub='google-oauth2|user_other'), 'cookie_account_mismatch'),
-                 (cookie_for(exp=1), 'invalid_session_cookie'), ('synthetic-invalid-cookie', 'invalid_session_cookie')]
+        authorizations = f'/api/v1/workspaces/{self.first}/authorizations'
         with patch.object(self.core.accounts, 'gateway', new_callable=AsyncMock) as gateway:
-            for cookie, code in cases:
-                with self.subTest(code=code):
-                    status, body, _ = await self.client.request('POST', self.path, {'cookie': cookie})
-                    self.assertEqual(status, 422)
-                    self.assertEqual(body['code'], code)
-                    self.assertNotIn(cookie, json.dumps(body))
+            for path in (self.path, f'{self.path}/{self.account_row.ref.account_id}/authorization'):
+                status, body, _ = await self.client.request('POST', path, {'cookie': cookie_for()})
+                self.assertEqual(status, 410)
+                self.assertEqual(body['code'], 'cookie_authorization_unsupported')
             gateway.assert_not_awaited()
-            for error in (requests.Timeout('synthetic-upstream-secret'), DesktopSessionError('synthetic-upstream-secret')):
+            # A transient poll failure keeps waiting for the browser; other failures end the attempt.
+            for error, expected in ((requests.Timeout('synthetic-upstream-secret'), 200),
+                                    (AuthExpired('synthetic-upstream-secret'), 502),
+                                    (DesktopSessionError('synthetic-upstream-secret'), 502)):
+                status, started, _ = await self.client.request('POST', authorizations, {'label': 'Pending'})
+                self.assertEqual(status, 201)
+                self.assertTrue(started['login_url'].startswith('https://cursor.com/loginDeepControl?'))
+                self.assertNotIn(self.core.accounts._authorizations[started['id']].verifier, json.dumps(started))
                 gateway.side_effect = error
-                status, body, _ = await self.client.request('POST', self.path, {'cookie': cookie_for()})
-                self.assertEqual(status, 502)
+                status, body, _ = await self.client.request('POST', f"{authorizations}/{started['id']}/poll")
+                self.assertEqual(status, expected)
                 self.assertNotIn('synthetic-upstream-secret', json.dumps(body))
                 self.assertNotIn('code', body)
+                if expected == 200:
+                    self.assertEqual(body['status'], 'pending')
+                    pending = started['id']
+                else:
+                    self.assertNotIn(started['id'], self.core.accounts._authorizations)
+            self.core.accounts._authorizations[pending].expires_at = 0
+            status, body, _ = await self.client.request('POST', f'{authorizations}/{pending}/poll')
+            self.assertEqual((status, body['code']), (409, 'authorization_expired'))
+            status, started, _ = await self.client.request('POST', authorizations, {})
+            self.assertEqual((await self.client.request('DELETE', f"{authorizations}/{started['id']}"))[0], 204)
+            self.assertEqual((await self.client.request('POST', f"{authorizations}/{started['id']}/poll"))[0], 404)
 
     async def test_quota_reference_edit_is_scoped_validated_and_preserves_freshness(self):
         account = self.account(email='reference@example.test', marker='reference', snapshot=data())
@@ -155,16 +171,18 @@ class V2HTTPTest(IdentityFixture, unittest.IsolatedAsyncioTestCase):
             self.assertIn(status, {400, 403})
         await self.client.login()
         secret = "DO-NOT-ECHO-SYNTHETIC-CREDENTIAL"
+        path = f"/api/v1/workspaces/{self.first}/authorizations"
         for body in ({"cookie": secret, "role": "owner", "user_id": self.actor.user_id},
-                     {"cookie": secret, "tags": [123]}, {"cookie": {"secret": secret}}):
-            status, result, _ = await self.client.request("POST", self.path, body)
+                     {"label": secret, "tags": [123]}, {"account_id": secret}, {"label": {"secret": secret}}):
+            status, result, _ = await self.client.request("POST", path, body)
             self.assertEqual(status, 422)
             self.assertNotIn(secret, json.dumps(result))
-        status, result, _ = await self.client.request("POST", self.path, raw=secret.encode())
+        status, result, _ = await self.client.request("POST", path, raw=secret.encode())
         self.assertEqual(status, 422)
         self.assertNotIn(secret, json.dumps(result))
-        self.assertEqual((await self.client.request("POST", self.path, raw=b"x" * 65537))[0], 413)
-        self.assertEqual((await self.client.request("POST", self.path, {}, headers={"content-length": "999999"}))[0], 413)
+        self.assertEqual((await self.client.request("POST", path, raw=b"x" * 65537))[0], 413)
+        self.assertEqual((await self.client.request("POST", path, {}, headers={"content-length": "999999"}))[0], 413)
+        self.assertEqual(self.core.accounts._authorizations, {})
 
     async def test_two_user_invitation_grant_flow_and_statistics(self):
         await self.client.login()
@@ -187,8 +205,9 @@ class V2HTTPTest(IdentityFixture, unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result["items"][0]["capabilities"]["refresh"])
         self.assertEqual((await member_client.request("POST", account_path + "/refresh"))[0], 403)
         self.assertEqual((await member_client.request("PATCH", account_path, {"tags": ["bad"]}))[0], 403)
-        for path in (self.path, account_path + "/authorization"):
-            self.assertEqual((await member_client.request("POST", path, {"cookie": "blocked-before-provider"}))[0], 403)
+        for body in ({}, {"account_id": self.account_row.ref.account_id}):
+            self.assertEqual((await member_client.request("POST", f"/api/v1/workspaces/{self.first}/authorizations",
+                                                          body))[0], 403)
         guessed = f"/api/v1/workspaces/{self.second}/accounts/{self.account_row.ref.account_id}"
         self.assertEqual((await member_client.request("GET", guessed))[0], 404)
         self.assertEqual((await self.client.request("GET", guessed))[0], 404)

@@ -4,15 +4,44 @@ import asyncio
 from collections import OrderedDict
 from contextlib import asynccontextmanager
 from copy import deepcopy
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import time
+import uuid
 
-from ..domain.core import Conflict, NotFound, Secrets
-from ..infrastructure.providers.cursor.authorization import exchange_cookie, verify_identity
+import requests
+
+from ..client import RateLimited
+from ..desktop import DesktopSessionError, login_challenge
+from ..domain.core import AuthorizationRejected, Conflict, NotFound, Secrets, Throttled
+from ..infrastructure.providers.cursor.authorization import login_url, poll_session, verify_identity
 from ..pools import fill_visible
 from ..usage import assemble_detail, iso_to_dt
 from .queries import QueryFailure, classify, collect_usage
 from .security import Limiter
+
+AUTHORIZATION_TTL = 300
+AUTHORIZATION_POLL_INTERVAL = 1.5
+AUTHORIZATION_RETRY_DELAY = 5
+AUTHORIZATION_MAX_FAILURES = 5
+MAX_AUTHORIZATIONS = 64
+MAX_USER_AUTHORIZATIONS = 3
+
+
+@dataclass(eq=False)
+class BrowserAuthorization:
+    """One pending desktop login confirmed in the user's browser; kept only in memory."""
+    user_id: str
+    workspace_id: str
+    account_id: str | None
+    label: str | None
+    tags: tuple
+    flow: str
+    verifier: str = field(repr=False)
+    expires_at: int = 0
+    next_poll: float = 0.0
+    failures: int = 0
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
 
 
 class AccountService:
@@ -21,6 +50,7 @@ class AccountService:
         self.limiter = Limiter()
         self._locks = {}
         self._details = OrderedDict()
+        self._authorizations = {}
 
     @asynccontextmanager
     async def _account_lock(self, key):
@@ -66,18 +96,92 @@ class AccountService:
     def _missing():
         raise NotFound("Workspace or account is unavailable")
 
-    async def authorize(self, actor, workspace_id, cookie, *, label=None, tags=(), account_id=None):
+    async def begin_authorization(self, actor, workspace_id, *, label=None, tags=(), account_id=None):
         self.repo.check_access(actor, workspace_id, account_id, "manage")
+        if account_id:
+            self.repo.authorized(workspace_id, account_id)
         self.limiter.manual(actor, workspace_id, account_id)
-        expected = self.repo.authorized(workspace_id, account_id) if account_id else None
-        session, email = await exchange_cookie(cookie, label or "Account", self.gateway,
-                                               expected_email=expected.email if expected else None)
+        now = int(time.time())
+        for key in [key for key, item in self._authorizations.items() if item.expires_at + AUTHORIZATION_TTL <= now]:
+            del self._authorizations[key]
+        # A new attempt supersedes the user's oldest ones, so one user cannot fill the shared capacity.
+        own = [key for key, item in self._authorizations.items() if item.user_id == actor.user_id]
+        for key in own[:max(0, len(own) - MAX_USER_AUTHORIZATIONS + 1)]:
+            del self._authorizations[key]
+        if len(self._authorizations) >= MAX_AUTHORIZATIONS:
+            raise Throttled("Too many pending authorizations; retry later")
+        flow, verifier, challenge = login_challenge()
+        key = str(uuid.uuid4())
+        self._authorizations[key] = BrowserAuthorization(actor.user_id, workspace_id, account_id, label, tuple(tags),
+                                                         flow, verifier, now + AUTHORIZATION_TTL)
+        return {"id": key, "login_url": login_url(flow, challenge), "expires_at": now + AUTHORIZATION_TTL}
+
+    def _own_authorization(self, actor, workspace_id, authorization_id):
+        item = self._authorizations.get(authorization_id)
+        if item is None or item.user_id != actor.user_id or item.workspace_id != workspace_id:
+            return None
+        return item
+
+    async def poll_authorization(self, actor, workspace_id, authorization_id):
+        item = self._own_authorization(actor, workspace_id, authorization_id) or self._missing()
+        self.repo.check_access(actor, workspace_id, item.account_id, "manage")
+        async with item.lock:
+            if self._authorizations.get(authorization_id) is not item:
+                self._missing()
+            pending = {"status": "pending", "expires_at": item.expires_at, "account": None}
+            if time.time() >= item.expires_at:
+                self._authorizations.pop(authorization_id, None)
+                raise AuthorizationRejected("Browser authorization expired; start again", "authorization_expired")
+            if time.monotonic() < item.next_poll:
+                return pending
+            item.next_poll = time.monotonic() + AUTHORIZATION_POLL_INTERVAL
+            try:
+                session = await poll_session(self.gateway, item.label or "Account", item.flow, item.verifier)
+            except (RateLimited, requests.RequestException):
+                # The browser confirmation can still arrive after a transient upstream failure.
+                item.failures += 1
+                if item.failures < AUTHORIZATION_MAX_FAILURES:
+                    item.next_poll = time.monotonic() + AUTHORIZATION_RETRY_DELAY
+                    return pending
+                self._authorizations.pop(authorization_id, None)
+                raise
+            except Exception:
+                self._authorizations.pop(authorization_id, None)
+                raise
+            if session is None:
+                item.failures = 0
+                return pending
+            # A poll result is single-use, and a cancellation during the poll still wins.
+            if self._authorizations.pop(authorization_id, None) is not item:
+                self._missing()
+            account = await self._complete_authorization(actor, item, session)
+            return {"status": "completed", "expires_at": item.expires_at, "account": account}
+
+    async def _complete_authorization(self, actor, item, session):
+        workspace_id = item.workspace_id
+        self.repo.check_access(actor, workspace_id, item.account_id, "manage")
+        expected = self.repo.authorized(workspace_id, item.account_id) if item.account_id else None
+        mismatch = AuthorizationRejected("The browser confirmed another Cursor account",
+                                         "authorization_account_mismatch", 422)
+        if expected and expected.subject and expected.subject != session.subject.removeprefix("auth0|"):
+            raise mismatch
+        label = item.label or (expected.label if expected else None)
+        identity = await self.gateway("", label or "Account", "desktop_me", session.token)
+        try:
+            email = verify_identity(identity, email=expected.email if expected else None, subject=session.subject)
+        except DesktopSessionError:
+            raise mismatch from None
         data = await collect_usage(label or email, lambda name: self.gateway("", label or email, name, session.token),
                                    email=email, subject=session.subject, verify=verify_identity)
         saved = self.repo.put_authorization(actor, workspace_id, email=email, subject=session.subject,
-                    label=label, secrets=Secrets(cookie, session.token, session.refresh_token),
-                    expires_at=session.expires_at, expected=expected.ref if expected else None, data=data, tags=tags)
+                    label=item.label, secrets=Secrets("", session.token, session.refresh_token),
+                    expires_at=session.expires_at, expected=expected.ref if expected else None, data=data,
+                    tags=item.tags)
         return self.get(actor, workspace_id, saved.ref.account_id)
+
+    def cancel_authorization(self, actor, workspace_id, authorization_id):
+        if self._own_authorization(actor, workspace_id, authorization_id):
+            del self._authorizations[authorization_id]
 
     async def refresh(self, actor, workspace_id, account_id):
         self.repo.check_access(actor, workspace_id, account_id, "use")

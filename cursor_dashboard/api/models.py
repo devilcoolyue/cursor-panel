@@ -6,7 +6,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 class AuthorizationError(BaseModel):
     detail: str
-    code: Literal['invalid_session_cookie', 'cookie_account_mismatch'] | None = None
+    code: Literal['cookie_authorization_unsupported', 'authorization_expired',
+                  'authorization_account_mismatch', 'account_exists'] | None = None
 
 
 class WorkspaceCapabilities(BaseModel):
@@ -238,6 +239,18 @@ class AccountView(BaseModel):
     expired: bool
     stale: bool
     pending: bool
+
+
+class AuthorizationStarted(BaseModel):
+    id: str
+    login_url: str
+    expires_at: int
+
+
+class AuthorizationProgress(BaseModel):
+    status: Literal['pending', 'completed']
+    expires_at: int
+    account: AccountView | None = None
 
 
 class AccountStats(BaseModel):

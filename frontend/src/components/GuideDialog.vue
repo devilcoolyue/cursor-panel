@@ -50,7 +50,7 @@ async function go(to: string) { await router.push(to); pauseGuide() }
         </template>
         <template v-else-if="guideProgress.step === 2">
           <p class="guide-lead">先添加一个账号，再认识卡片上的剩余额度和更新时间。</p>
-          <ol class="guide-instructions"><li><strong>添加账号。</strong>在「账号与额度」点击「添加账号」，填写名称、标签和 Cursor 网页会话 Cookie。表单内有「如何获取 Cookie」说明。</li><li><strong>查看额度。</strong>卡片显示最后成功快照；额度条表示已用比例，右侧显示剩余比例。点「明细」查看模型用量。</li><li><strong>按需刷新。</strong>单个账号「刷新」查询最新额度；「重载列表」只重新读取快照。可按名称搜索、标签筛选和额度排序。</li></ol>
+          <ol class="guide-instructions"><li><strong>添加账号。</strong>在「账号与额度」点击「添加账号」，填写名称和标签，点「在浏览器中授权」，在打开的 Cursor 确认页用该账号确认登录。</li><li><strong>查看额度。</strong>卡片显示最后成功快照；额度条表示已用比例，右侧显示剩余比例。点「明细」查看模型用量。</li><li><strong>按需刷新。</strong>单个账号「刷新」查询最新额度；「重载列表」只重新读取快照。可按名称搜索、标签筛选和额度排序。</li></ol>
           <p class="guide-note">没有「添加账号」入口时，请联系空间所有者或管理员。成员加入团队后，需要单独获得账号授权。</p>
         </template>
         <template v-else-if="guideProgress.step === 3">

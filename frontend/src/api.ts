@@ -4,14 +4,17 @@ export type Schema = components['schemas']
 export type Account = Schema['AccountView']
 export type Workspace = Schema['WorkspaceView']
 export type Me = Schema['Me']
+export type AuthorizationStarted = Schema['AuthorizationStarted']
+export type AuthorizationProgress = Schema['AuthorizationProgress']
 
 export class ApiError extends Error {
   constructor(public status: number, message: string) { super(message) }
 }
 
-const cookieErrors = new Map<string, string>([
-  ['invalid_session_cookie', 'Cookie 格式无效或已过期，请重新登录 Cursor 网页版并复制完整的会话 Cookie。'],
-  ['cookie_account_mismatch', 'Cookie 的账号与 Token 不一致，请重新复制同一账号的完整会话 Cookie。'],
+const errorCodes = new Map<string, string>([
+  ['authorization_expired', '授权已超时，请重新在浏览器中授权。'],
+  ['authorization_account_mismatch', '浏览器中确认的 Cursor 账号与要重新授权的账号不一致，请在浏览器切换到该账号后重试。'],
+  ['account_exists', '该 Cursor 账号已在当前空间中，请在它的账号卡片上使用「重新授权」。'],
 ])
 
 /** One in-memory request scope per user/workspace. Even non-abortable responses are discarded. */
@@ -47,8 +50,8 @@ export class ApiClient {
           404: '内容不可用，可能已删除或收回授权。', 409: '状态已发生变化，请重新载入后重试。', 422: '请检查填写的内容。',
           426: '实例协议不兼容，请升级服务端或桌面应用。', 429: '操作过于频繁，请稍后重试。', 502: '服务请求失败，请检查网络后重试。', 503: '服务暂不可用，请联系实例管理员。' }
         // Only recognized codes select public messages; never render upstream detail or credentials.
-        const cookieMessage = response.status === 422 && typeof data?.code === 'string' ? cookieErrors.get(data.code) : undefined
-        throw new ApiError(response.status, cookieMessage || messages[response.status] || '请求失败，请稍后重试。')
+        const codeMessage = typeof data?.code === 'string' ? errorCodes.get(data.code) : undefined
+        throw new ApiError(response.status, codeMessage || messages[response.status] || '请求失败，请稍后重试。')
       }
       return data as T
     } finally {

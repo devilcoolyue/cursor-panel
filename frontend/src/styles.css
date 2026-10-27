@@ -339,21 +339,17 @@ dialog[open] { display: flex; flex-direction: column; }
 .dialog-footer > button { font-size: 12px; min-width: 66px; }
 .account-form-dialog { width: min(540px, calc(100vw - 32px)); }
 .account-form { gap: 20px; }
-.account-form > label, .cookie-field > label, .form-field-label { font-size: 12px; font-weight: 500; color: var(--fg); }
+.account-form > label, .form-field-label { font-size: 12px; font-weight: 500; color: var(--fg); }
 .account-form input, .account-form textarea { font-weight: 400; font-size: 13px; transition: border-color .15s ease, box-shadow .15s ease; }
 .account-form input:focus, .account-form textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-bg); }
 .account-form :is(input, textarea)::placeholder { color: var(--dimmer); }
 .form-field-label { display: flex; align-items: baseline; gap: 7px; margin-bottom: 7px; }
 .form-field-label small { color: var(--dimmer); font-size: 10px; font-weight: 400; }
-.cookie-field textarea { min-height: 110px; max-height: 220px; font: 11.5px/1.8 ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
 .field-hint { font-size: 11px; line-height: 1.7; color: var(--dimmer); margin: 7px 0 0; }
-.cookie-help { margin-top: 10px; font-size: 11px; }
-.cookie-help summary, .detail-account-info summary { display: flex; align-items: center; gap: 5px; list-style: none; }
-.cookie-help summary::-webkit-details-marker, .detail-account-info summary::-webkit-details-marker { display: none; }
-.cookie-help summary > svg, .detail-account-info summary > svg { transition: transform .18s ease; }
-.cookie-help[open] summary > svg, .detail-account-info[open] summary > svg { transform: rotate(90deg); }
-.cookie-help p { color: var(--dim); line-height: 1.8; margin: 9px 0 0; padding-left: 18px; overflow-wrap: anywhere; }
-.cookie-help code { color: var(--fg); font-size: 10.5px; }
+.detail-account-info summary { display: flex; align-items: center; gap: 5px; list-style: none; }
+.detail-account-info summary::-webkit-details-marker { display: none; }
+.detail-account-info summary > svg { transition: transform .18s ease; }
+.detail-account-info[open] summary > svg { transform: rotate(90deg); }
 .account-form .error { margin-bottom: 0; }
 .account-tag-picker .ui-popover-anchor { display: block; }
 .account-tag-trigger { justify-content: space-between; width: 100%; min-height: 40px; padding: 7px 11px; background: var(--input-bg); text-align: left; font-size: 13px; white-space: normal; }
@@ -461,7 +457,7 @@ dialog[open] { display: flex; flex-direction: column; }
   .account-card-heading .account-identity-line { padding-right: 0; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .toolbar-controls .search-field, .card-quick-actions, .cycle-ring, .quota-label > .ui-icon, .cookie-help summary > svg, .detail-account-info summary > svg { transition: none; }
+  .toolbar-controls .search-field, .card-quick-actions, .cycle-ring, .quota-label > .ui-icon, .detail-account-info summary > svg { transition: none; }
   .detail-skeleton-row i { animation: none; }
 }
 

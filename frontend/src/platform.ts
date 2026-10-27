@@ -38,6 +38,8 @@ export const native = <T>(operation: 'status' | 'unlock' | 'detect' | 'cursor_pa
 export const archive = (operation: 'export' | 'import' | 'recover', password: string, workspace?: string) =>
   checked<{ count?: number; cancelled?: boolean; phase?: string }>('desktop_archive', { operation, password, workspace })
 export async function openBackups() { await invoke('desktop_open_backups') }
+/** Native code opens only Cursor's login confirmation page in the system browser. */
+export async function openCursorLogin(url: string) { await invoke('open_cursor_login', { url }) }
 export const connectionAction = (operation: 'list' | 'add' | 'select' | 'login' | 'disconnect' | 'remove', id?: string, body?: unknown) =>
   checked<ConnectionsState>('connection_request', { operation, connection_id: id, body })
 
@@ -45,22 +47,27 @@ export const connectionAction = (operation: 'list' | 'add' | 'select' | 'login' 
 export async function localRequest(path: string, method: string, body?: unknown): Promise<Response> {
   const url = new URL(path, 'http://local.invalid')
   const parts = url.pathname.split('/').filter(Boolean)
-  let operation = '', workspace: string | undefined, account: string | undefined
+  let operation = '', workspace: string | undefined, account: string | undefined, authorization: string | undefined
   if (parts.length === 1 && method === 'GET' && ['bootstrap', 'me'].includes(parts[0]!)) operation = parts[0]!
   else if (parts[0] === 'workspaces' && parts[1]) {
     workspace = parts[1]
     if (parts[2] === 'audit' && parts.length === 3 && method === 'GET') operation = 'audit'
     else if (parts[2] === 'accounts') {
       account = parts[3]
-      if (parts.length === 3) operation = ({ GET: 'list', POST: 'add' } as Record<string, string>)[method] || ''
+      if (parts.length === 3 && method === 'GET') operation = 'list'
       if (parts.length === 4) operation = ({ GET: 'get', PATCH: 'edit', DELETE: 'delete' } as Record<string, string>)[method] || ''
-      if (parts.length === 5) operation = ({ 'POST:authorization': 'reauthorize', 'POST:refresh': 'refresh', 'GET:detail': 'detail' } as Record<string, string>)[`${method}:${parts[4]}`] || ''
+      if (parts.length === 5) operation = ({ 'POST:refresh': 'refresh', 'GET:detail': 'detail' } as Record<string, string>)[`${method}:${parts[4]}`] || ''
+    } else if (parts[2] === 'authorizations') {
+      authorization = parts[3]
+      if (parts.length === 3 && method === 'POST') operation = 'authorize'
+      if (parts.length === 4 && method === 'DELETE') operation = 'authorization_cancel'
+      if (parts.length === 5 && method === 'POST' && parts[4] === 'poll') operation = 'authorization_poll'
     }
   }
   if (!operation && connectionId.value) return remoteManage(parts, method, body, url.searchParams)
   if (!operation) throw new DesktopError('此功能暂不适用于独立桌面。')
   const query = Object.fromEntries([...url.searchParams].map(([key, value]) => [key, ['limit', 'offset'].includes(key) ? Number(value) : value]))
-  const result = await invoke<NativeResponse>('account_request', { operation, workspace, account, query, body, connection_id: connectionId.value })
+  const result = await invoke<NativeResponse>('account_request', { operation, workspace, account, authorization, query, body, connection_id: connectionId.value })
   return new Response(result.status === 204 ? null : JSON.stringify(result.body), { status: result.status, headers: { 'Content-Type': 'application/json' } })
 }
 

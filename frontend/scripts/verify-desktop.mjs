@@ -15,7 +15,7 @@ import { selectOption } from './ui-controls.mjs'
 import { verifyQuotaReferences } from './verify-quota-references.mjs'
 import { verifyListRefresh } from './verify-list-refresh.mjs'
 import { verifyDesktopHelp } from './help-flows.mjs'
-import { verifyCookieAuthorization } from './verify-cookie-authorization.mjs'
+import { verifyBrowserAuthorization } from './verify-browser-authorization.mjs'
 import { currentRelease } from './update-fixture.mjs'
 const root = fileURLToPath(new URL('../../', import.meta.url))
 const directory = await mkdtemp(join(tmpdir(), 'cursor-p4-browser-'))
@@ -71,8 +71,10 @@ try {
   // Synthetic Windows discovery responses exercise the UI without reading a real editor.
   let discoveryFixture = null
   const pathRequests = []
+  const cursorLogins = []
   await context.exposeBinding('nativeInvoke', async (_, command, args) => {
     if (command === 'check_update') return currentRelease
+    if (command === 'open_cursor_login') { cursorLogins.push(args.url); return null }
     if (command === 'frontend_ready' || command === 'desktop_open_backups') return null
     if (command === 'connection_request') return request('/native/connections')
     if (command === 'desktop_archive') {
@@ -111,7 +113,7 @@ try {
     }
     const base = `/api/v1/workspaces/${args.workspace}`
     const account = `${base}/accounts/${args.account}`
-    const routes = { bootstrap: ['/api/v1/bootstrap'], me: ['/api/v1/me'], list: [`${base}/accounts`], get: [account], add: [`${base}/accounts`, 'POST'], reauthorize: [`${account}/authorization`, 'POST'], edit: [account, 'PATCH'], delete: [account, 'DELETE'], refresh: [`${account}/refresh`, 'POST'], detail: [`${account}/detail`], audit: [`${base}/audit`] }
+    const routes = { bootstrap: ['/api/v1/bootstrap'], me: ['/api/v1/me'], list: [`${base}/accounts`], get: [account], authorize: [`${base}/authorizations`, 'POST'], authorization_poll: [`${base}/authorizations/${args.authorization}/poll`, 'POST'], authorization_cancel: [`${base}/authorizations/${args.authorization}`, 'DELETE'], edit: [account, 'PATCH'], delete: [account, 'DELETE'], refresh: [`${account}/refresh`, 'POST'], detail: [`${account}/detail`], audit: [`${base}/audit`] }
     const [path, method = 'GET'] = routes[args.operation]
     if (args.operation === 'refresh') {
       manualRefreshRequests++
@@ -134,7 +136,7 @@ try {
   await waitRows(page, 2)
   await verifyDesktopHelp(page)
   if (!process.argv.includes('--help-only')) {
-  await verifyCookieAuthorization(page)
+  await verifyBrowserAuthorization(page, cursorLogins)
   assert.equal(await page.getByText('团队协作', { exact: true }).count(), 0)
   assert.equal(await page.getByText('退出登录', { exact: true }).count(), 0)
   const sidebar = page.getByRole('complementary', { name: '侧栏导航' })

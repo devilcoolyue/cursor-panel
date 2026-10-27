@@ -5,10 +5,12 @@ import asyncio
 import base64
 from datetime import datetime, timedelta, timezone
 import json
+import re
 import time
 from pathlib import Path
 import sqlite3
-from cursor_dashboard.desktop import parse_session, token_claims
+import requests
+from cursor_dashboard.desktop import token_claims
 from cursor_dashboard.domain.core import Secrets
 from cursor_dashboard.usage import assemble_desktop
 
@@ -18,30 +20,37 @@ def token(subject='user_preview'):
     return 'eyJhbGciOiJIUzI1NiJ9.' + body + '.synthetic'
 
 
+BROWSER_SUBJECT = re.compile(r'(?:[a-z0-9-]+\|)?user_[A-Za-z0-9_]+')
+
+
+def pending_poll():
+    response = requests.Response()
+    response.status_code = 404
+    return requests.HTTPError('Browser login is not confirmed yet', response=response)
+
+
 class PreviewGateway:
+    """The synthetic browser confirms each login on its second poll. It signs in as a
+    subject named in the account label (for example `user_added`), otherwise `user_browser`."""
     def __init__(self):
         self.flows = {}
 
     async def __call__(self, cookie, label, name, *args):
-        if name == 'me':
-            subject = parse_session(cookie).subject.removeprefix('auth0|')
-        elif name == 'desktop_callback':
-            self.flows[args[0]] = parse_session(cookie).subject.removeprefix('auth0|')
-            return {}
-        elif name == 'desktop_poll':
+        if name == 'desktop_poll':
+            if args[0] not in self.flows:
+                match = BROWSER_SUBJECT.search(label or '')
+                self.flows[args[0]] = match.group(0) if match else 'user_browser'
+                raise pending_poll()
             subject = self.flows.pop(args[0])
             return {'accessToken': token(subject), 'refreshToken': 'preview-' + subject}
         elif name == 'desktop_refresh':
             return {'access_token': token(args[0].removeprefix('preview-')), 'refresh_token': args[0]}
         else:
             subject = token_claims(args[0])['sub'].removeprefix('auth0|')
-        if name in {'me', 'desktop_me'}:
+        if name == 'desktop_me':
             identity = subject if '|' in subject else 'auth0|' + subject
-            user_id = subject.split('|', 1)[-1]
-            email = user_id.removeprefix('user_') + '@example.test'
-            # The web profile returns a bare sub, while issued tokens retain the provider.
-            return {'email': email, 'sub': user_id} if name == 'me' else {
-                'email': email, 'authId': identity}
+            email = subject.split('|', 1)[-1].removeprefix('user_') + '@example.test'
+            return {'email': email, 'authId': identity}
         if name == 'desktop_plan':
             return {'planInfo': {'planName': 'Pro', 'includedAmountCents': 2000}}
         if name == 'desktop_profile':

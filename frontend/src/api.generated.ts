@@ -391,8 +391,7 @@ export interface paths {
         /** Accounts */
         get: operations["accounts_api_v1_workspaces__workspace_id__accounts_get"];
         put?: never;
-        /** Authorize Account */
-        post: operations["authorize_account_api_v1_workspaces__workspace_id__accounts_post"];
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -418,7 +417,7 @@ export interface paths {
         patch: operations["edit_account_api_v1_workspaces__workspace_id__accounts__account_id__patch"];
         trace?: never;
     };
-    "/api/v1/workspaces/{workspace_id}/accounts/{account_id}/authorization": {
+    "/api/v1/workspaces/{workspace_id}/authorizations": {
         parameters: {
             query?: never;
             header?: never;
@@ -427,9 +426,43 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Reauthorize Account */
-        post: operations["reauthorize_account_api_v1_workspaces__workspace_id__accounts__account_id__authorization_post"];
+        /** Start Authorization */
+        post: operations["start_authorization_api_v1_workspaces__workspace_id__authorizations_post"];
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspace_id}/authorizations/{authorization_id}/poll": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Poll Authorization */
+        post: operations["poll_authorization_api_v1_workspaces__workspace_id__authorizations__authorization_id__poll_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspace_id}/authorizations/{authorization_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Cancel Authorization */
+        delete: operations["cancel_authorization_api_v1_workspaces__workspace_id__authorizations__authorization_id__delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -834,24 +867,41 @@ export interface components {
                 [key: string]: unknown;
             } | null;
         };
-        /** Authorization */
-        Authorization: {
-            /**
-             * Cookie
-             * Format: password
-             */
-            cookie: string;
-            /** Label */
-            label?: string | null;
-            /** Tags */
-            tags?: string[];
-        };
         /** AuthorizationError */
         AuthorizationError: {
             /** Detail */
             detail: string;
             /** Code */
-            code?: ("invalid_session_cookie" | "cookie_account_mismatch") | null;
+            code?: ("cookie_authorization_unsupported" | "authorization_expired" | "authorization_account_mismatch" | "account_exists") | null;
+        };
+        /** AuthorizationProgress */
+        AuthorizationProgress: {
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "pending" | "completed";
+            /** Expires At */
+            expires_at: number;
+            account?: components["schemas"]["AccountView"] | null;
+        };
+        /** AuthorizationStart */
+        AuthorizationStart: {
+            /** Label */
+            label?: string | null;
+            /** Tags */
+            tags?: string[];
+            /** Account Id */
+            account_id?: string | null;
+        };
+        /** AuthorizationStarted */
+        AuthorizationStarted: {
+            /** Id */
+            id: string;
+            /** Login Url */
+            login_url: string;
+            /** Expires At */
+            expires_at: number;
         };
         /** Bootstrap */
         Bootstrap: {
@@ -2237,41 +2287,6 @@ export interface operations {
             };
         };
     };
-    authorize_account_api_v1_workspaces__workspace_id__accounts_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                workspace_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["Authorization"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AccountView"];
-                };
-            };
-            /** @description Unprocessable Entity */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AuthorizationError"];
-                };
-            };
-        };
-    };
     account_api_v1_workspaces__workspace_id__accounts__account_id__get: {
         parameters: {
             query?: never;
@@ -2370,21 +2385,52 @@ export interface operations {
             };
         };
     };
-    reauthorize_account_api_v1_workspaces__workspace_id__accounts__account_id__authorization_post: {
+    start_authorization_api_v1_workspaces__workspace_id__authorizations_post: {
         parameters: {
             query?: never;
             header?: never;
             path: {
                 workspace_id: string;
-                account_id: string;
             };
             cookie?: never;
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["Authorization"];
+                "application/json": components["schemas"]["AuthorizationStart"];
             };
         };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuthorizationStarted"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    poll_authorization_api_v1_workspaces__workspace_id__authorizations__authorization_id__poll_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspace_id: string;
+                authorization_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
         responses: {
             /** @description Successful Response */
             200: {
@@ -2392,7 +2438,16 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["AccountView"];
+                    "application/json": components["schemas"]["AuthorizationProgress"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuthorizationError"];
                 };
             };
             /** @description Unprocessable Entity */
@@ -2402,6 +2457,36 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AuthorizationError"];
+                };
+            };
+        };
+    };
+    cancel_authorization_api_v1_workspaces__workspace_id__authorizations__authorization_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspace_id: string;
+                authorization_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

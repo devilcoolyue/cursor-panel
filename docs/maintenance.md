@@ -34,13 +34,15 @@ P3 新 Web 位于 `frontend/`，通过 OpenAPI 生成类型；手工切换适配
 
 ## 授权与取数
 
-初次授权流程为：解析 Cookie 格式与到期声明，调用网页 `me` 校验邮箱和 subject，经 `desktop_callback` 和 `desktop_poll` 换取桌面凭证，再调用 `desktop_me` 校验身份。`desktop_callback` 在同一 Session 内先取 `/api/csrf-token`，以同值的 `csrf-token` Cookie 和 `x-csrf-token` 头提交；缺少时 cursor.com 返回 403 JSON，会被归为认证错误。Token 的本地解析不验证签名，身份确认依赖远端接口。新增/重新授权还需完成 6 项桌面额度请求，成功后才提交账号和快照。
+V2 新增/重新授权采用 Cursor 编辑器的浏览器确认流程：`begin_authorization()` 生成 PKCE 与 `https://cursor.com/loginDeepControl?challenge&uuid&mode=login` 链接，verifier 只保存在进程内存，5 分钟过期、仅发起人可查询或取消，最多 64 个待确认流程。用户在自己的浏览器确认后，`poll_authorization()` 经 `desktop_poll` 领取桌面凭证（404 表示尚未确认，单流程至少间隔 1.5 秒查询上游；限流/网络错误最多容忍 5 次），校验 JWT 类型与提供方 subject、`desktop_me` 身份及 6 项桌面额度后才提交账号和快照，新记录不保存 Cookie。领取结果单次有效，后续失败需重新确认。Token 的本地解析不验证签名，身份确认依赖远端接口。
 
-Cookie 的裸 `user_…` 可对应裸 subject 或 `提供方|user_…`（如 `auth0|`、`google-oauth2|`、`github|`）。Cookie ID 比较时提取后缀，完整 OAuth subject 继续用于上游身份校验及存储，不能因后缀相同就把不同提供方视为同一账号。V2 的本地 Cookie 校验失败返回 422 和固定错误码（`invalid_session_cookie` / `cookie_account_mismatch`），前端按白名单显示提示；上游请求/桌面凭证失败仍返回脱敏的 502。合成回归覆盖导入、重新授权、续期、身份不匹配及 Web/桌面提示。
+不再在浏览器外提交网页回调：Cursor 的 `loginDeepCallbackControl` 先后加入双提交 CSRF 和 Castle 风控（缺少浏览器生成的 `castleRequestToken` 时返回 403 纯文本），服务器端无法也不应伪造。V1 的 `exchange_cookie()` / `desktop_callback` 仅为旧面板和旧会话实验保留，当前会被上游拒绝。V2 旧 Cookie 接口返回 410 `cookie_authorization_unsupported`。
+
+浏览器确认的 OAuth 账号保留完整 `提供方|user_…` subject，不能因后缀相同把不同提供方视为同一账号。可处理的结果使用固定错误码：重新授权时浏览器确认了其他账号为 422 `authorization_account_mismatch`，新增时账号已在空间中为 409 `account_exists`，流程超时为 409 `authorization_expired`，前端按白名单显示提示；上游请求/桌面凭证失败仍返回脱敏的 502。远程实例连接只透传状态码。合成回归覆盖新增、重新授权、续期、身份不匹配、超时、取消及 Web/桌面提示；预览夹具在第二次查询时确认，身份取账号名称中的 `user_…`，否则为 `user_browser`。
 
 网页 `me` 可返回同一账号的裸 `sub`，身份资料校验允许它匹配 JWT 的 `提供方|user_…`；此兼容仅用于上游身份资料，不剥离已签发 JWT 或持久化身份的提供方。桌面 `GetMe` 的 `authId`、网页/桌面 JWT 与保存的完整身份仍受原比较规则约束。Google 账号经用户明确授权的单次本地导入已实测通过，见 [Issue #2 补充验证](archive/2026-09-16-oauth-cookie.md#真实导入补充验证)；不据此推断 GitHub 实测、多设备续期或撤销行为。
 
-常规刷新、明细与切换先调用 `ensure_account()`。保存的凭证可用时直接复用；有 RT 时只走桌面续期，无 RT 的旧记录才通过 Cookie 迁移，已经标记撤销的记录直接要求重新授权。
+常规刷新、明细与切换先调用 `ensure_account()`。保存的凭证可用时直接复用；有 RT 时只走桌面续期，已经标记撤销的记录直接要求重新授权。V2 中无 RT 的旧记录直接标记失效，需在浏览器中重新授权；V1 `sessions.py` 仍尝试 Cookie 迁移，但会被上游拒绝。
 
 续期窗口为 `expires_at - min(TOKEN_REFRESH_MARGIN, max(30, lifetime * 0.2))`，其中 `lifetime = token_expires_at - auth_refreshed_at`。这是下一次查询时执行的按需逻辑，没有独立的精确定时续期任务。桌面请求遇到 `AuthExpired` 后强制续期并重试一次。
 

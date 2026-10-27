@@ -13,7 +13,7 @@ import { verifyListRefresh } from './verify-list-refresh.mjs'
 import { verifySidebar } from './verify-sidebar.mjs'
 import { verifyPublicDocs } from './help-flows.mjs'
 import { fixtureContext } from './update-fixture.mjs'
-import { verifyCookieAuthorization } from './verify-cookie-authorization.mjs'
+import { verifyBrowserAuthorization } from './verify-browser-authorization.mjs'
 
 const root = fileURLToPath(new URL('../../', import.meta.url))
 const portProbe = createServer()
@@ -67,15 +67,14 @@ try {
   assert.equal(await owner.getByLabel('登录邮箱', { exact: true }).inputValue(), 'owner@example.test')
   await login(owner, 'owner')
   await waitRows(owner, 2)
-  await verifyCookieAuthorization(owner)
+  await verifyBrowserAuthorization(owner, ownerContext.cursorLogins)
   // Unknown error codes and arbitrary server details must retain the generic message.
-  const authorizationPattern = '**/api/v1/workspaces/*/accounts'
+  const authorizationPattern = '**/api/v1/workspaces/*/authorizations'
   await owner.route(authorizationPattern, route => route.request().method() === 'POST'
     ? route.fulfill({ status: 422, json: { code: 'constructor', detail: '<b>synthetic-server-secret</b>' } })
     : route.continue())
   await click(owner, '＋ 添加账号')
-  await owner.getByLabel('Cursor 网页会话 Cookie').fill('synthetic-invalid-cookie')
-  await click(owner, '保存')
+  await click(owner, '在浏览器中授权')
   await visible(owner.getByRole('alert'))
   assert.equal(await owner.getByRole('alert').innerText(), '请检查填写的内容。')
   await click(owner, '取消')
@@ -420,10 +419,7 @@ try {
   await tagPicker.getByRole('button', { name: '完成', exact: true }).click()
   assert.equal(await owner.getByRole('dialog').count(), 1)
   assert.deepEqual(await owner.locator('.selected-account-tags .account-tag').allTextContents(), ['开发', '验证', 'CI'])
-  assert.equal(await owner.getByLabel('Cursor 网页会话 Cookie').evaluate(el => el.tagName), 'TEXTAREA')
-  const claims = Buffer.from(JSON.stringify({ sub: 'auth0|user_added', type: 'session', exp: Math.floor(Date.now() / 1000) + 86400 })).toString('base64url')
-  await owner.getByLabel('Cursor 网页会话 Cookie').fill(`user_added::eyJhbGciOiJIUzI1NiJ9.${claims}.synthetic`)
-  await click(owner, '保存')
+  await click(owner, '在浏览器中授权')
   await waitRows(owner, 4)
   const added = owner.locator('[data-account]').filter({ has: owner.getByRole('heading', { name: '<b>验证账号</b>', exact: true }) })
   assert.equal(await added.locator('h2 b').count(), 0)
@@ -440,8 +436,7 @@ try {
   await visible(owner.getByRole('heading', { name: '已编辑账号', exact: true }))
   const edited = owner.locator('[data-account]').filter({ has: owner.getByRole('heading', { name: '已编辑账号', exact: true }) })
   await edited.getByLabel('更多账号操作').click(); await edited.getByRole('button', { name: '重新授权', exact: true }).click()
-  await owner.getByLabel('Cursor 网页会话 Cookie').fill(`user_added::eyJhbGciOiJIUzI1NiJ9.${claims}.synthetic`)
-  await click(owner, '保存'); await owner.getByRole('dialog').waitFor({ state: 'detached' })
+  await click(owner, '在浏览器中授权'); await owner.getByRole('dialog').waitFor({ state: 'detached' })
   await edited.getByLabel('更多账号操作').click(); await edited.getByRole('button', { name: '删除账号', exact: true }).click()
   await click(owner, '确认删除'); await waitRows(owner, 3)
 

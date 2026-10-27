@@ -81,25 +81,37 @@ class DesktopTest(unittest.IsolatedAsyncioTestCase):
         return await self.client.request(method, path, body, headers={
             'host': '127.0.0.1:19441', 'origin': None, 'authorization': 'Bearer ' + 'a' * 64, **(headers or {})})
 
-    async def test_oauth_cookie_import_reauthorization_and_refresh_preserve_identity(self):
+    async def authorize_in_browser(self, body):
+        """Start a browser authorization; the synthetic browser confirms on the second poll."""
+        path = f'/api/v1/workspaces/{self.workspace}/authorizations'
+        status, started, _ = await self.request('POST', path, body)
+        self.assertEqual(status, 201, started)
+        for _ in range(3):
+            pending = self.core.accounts._authorizations.get(started['id'])
+            if pending:
+                pending.next_poll = 0
+            status, result, _ = await self.request('POST', f"{path}/{started['id']}/poll")
+            if status != 200 or result['status'] == 'completed':
+                return status, result
+        self.fail('Browser authorization did not complete')
+
+    async def test_oauth_browser_authorization_reauthorization_and_refresh_preserve_identity(self):
         path = f'/api/v1/workspaces/{self.workspace}/accounts'
         for provider in ('google-oauth2', 'github'):
             with self.subTest(provider=provider):
                 subject = f'{provider}|user_test'
-                cookie = cookie_for(sub=subject)
-                status, result, _ = await self.request('POST', path, {'cookie': cookie})
-                self.assertEqual(status, 201, result)
-                account_id = result['id']
-                self.assertIsNotNone(result['data'])
+                status, result = await self.authorize_in_browser({'label': f'OAuth {subject}'})
+                self.assertEqual(status, 200, result)
+                account_id = result['account']['id']
+                self.assertIsNotNone(result['account']['data'])
                 saved = self.core.repository.authorized(self.workspace, account_id)
                 self.assertEqual(saved.subject, subject)
-                self.assertEqual(saved.secrets.cookie, cookie)
-                self.assertNotIn(cookie, json.dumps(result))
+                self.assertEqual(saved.secrets.cookie, '')
                 self.assertNotIn(saved.secrets.access_token, json.dumps(result))
-                authorization_path = f'{path}/{account_id}/authorization'
-                status, result, _ = await self.request('POST', authorization_path, {'cookie': cookie})
+                self.assertNotIn(saved.secrets.refresh_token, json.dumps(result))
+                status, result = await self.authorize_in_browser({'label': f'OAuth {subject}', 'account_id': account_id})
                 self.assertEqual(status, 200, result)
-                self.assertNotEqual(result['authorization_generation'], saved.ref.generation)
+                self.assertNotEqual(result['account']['authorization_generation'], saved.ref.generation)
                 current = self.core.repository.authorized(self.workspace, account_id)
                 refreshed = await self.core.credentials.ensure(self.workspace, account_id,
                                                                rejected_token=current.secrets.access_token)
@@ -107,26 +119,24 @@ class DesktopTest(unittest.IsolatedAsyncioTestCase):
                 self.assertGreater(refreshed.ref.version, current.ref.version)
                 # Same user suffix/email from another provider must not replace this identity.
                 other = 'github' if provider == 'google-oauth2' else 'google-oauth2'
-                status, _, _ = await self.request('POST', authorization_path,
-                                                 {'cookie': cookie_for(sub=f'{other}|user_test')})
-                self.assertEqual(status, 409)
+                status, result = await self.authorize_in_browser({'label': f'OAuth {other}|user_test',
+                                                                  'account_id': account_id})
+                self.assertEqual((status, result['code']), (422, 'authorization_account_mismatch'))
                 self.assertEqual(self.core.repository.authorized(self.workspace, account_id), refreshed)
                 self.assertEqual((await self.request('DELETE', f'{path}/{account_id}'))[0], 204)
 
-    async def test_invalid_cookie_add_and_reauthorization_fail_before_provider(self):
+    async def test_retired_cookie_routes_and_other_browser_identity_keep_accounts(self):
         path = f'/api/v1/workspaces/{self.workspace}/accounts'
         saved = self.core.repository.authorized(self.workspace, self.accounts[0]['id'])
-        cases = [(cookie_for(sub='google-oauth2|user_other'), 'cookie_account_mismatch'),
-                 (cookie_for(exp=1), 'invalid_session_cookie'), ('synthetic-invalid-cookie', 'invalid_session_cookie')]
         with patch.object(self.core.accounts, 'gateway', new_callable=AsyncMock) as gateway:
             for route in (path, f"{path}/{saved.ref.account_id}/authorization"):
-                for cookie, code in cases:
-                    with self.subTest(route=route, code=code):
-                        status, result, _ = await self.request('POST', route, {'cookie': cookie})
-                        self.assertEqual(status, 422, result)
-                        self.assertEqual(result['code'], code)
-                        self.assertNotIn(cookie, json.dumps(result))
+                with self.subTest(route=route):
+                    status, _, _ = await self.request('POST', route, {'cookie': cookie_for()})
+                    self.assertIn(status, {404, 405})
             gateway.assert_not_awaited()
+        status, result = await self.authorize_in_browser({'label': 'Intruder user_intruder',
+                                                          'account_id': saved.ref.account_id})
+        self.assertEqual((status, result['code']), (422, 'authorization_account_mismatch'))
         self.assertEqual(self.core.repository.authorized(self.workspace, saved.ref.account_id), saved)
         self.assertEqual(len(self.core.accounts.list(self.actor, self.workspace)), 2)
 

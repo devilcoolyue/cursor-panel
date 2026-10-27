@@ -93,11 +93,12 @@ _ACCOUNT = rf"{_SPACE}/accounts/{_ID}"
 _PUBLIC_ROUTES = {
     "GET": [r"/bootstrap", r"/me", r"/auth/sessions", r"/auth/devices", r"/instance/(users|audit)",
             rf"{_SPACE}/(accounts|members|invitations|audit)", _ACCOUNT, rf"{_ACCOUNT}/(detail|grants)"],
-    "POST": [r"/workspaces", rf"{_SPACE}/(accounts|invitations)", rf"{_ACCOUNT}/(refresh|authorization)"],
+    "POST": [r"/workspaces", rf"{_SPACE}/(authorizations|invitations)", rf"{_SPACE}/authorizations/{_ID}/poll",
+             rf"{_ACCOUNT}/refresh"],
     "PUT": [r"/auth/password", rf"/instance/users/{_ID}", rf"{_SPACE}/owner",
             rf"{_SPACE}/members/{_ID}", rf"{_ACCOUNT}/grants/{_ID}"],
     "PATCH": [_ACCOUNT],
-    "DELETE": [rf"/auth/(sessions|devices)/{_ID}", _SPACE, _ACCOUNT,
+    "DELETE": [rf"/auth/(sessions|devices)/{_ID}", _SPACE, _ACCOUNT, rf"{_SPACE}/authorizations/{_ID}",
                rf"{_SPACE}/(members|invitations)/{_ID}", rf"{_ACCOUNT}/grants/{_ID}"],
 }
 

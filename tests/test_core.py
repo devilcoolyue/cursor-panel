@@ -17,11 +17,14 @@ import threading
 import time
 import unittest
 from unittest.mock import patch
+from urllib.parse import parse_qs, urlsplit
 
+import requests
 from sqlalchemy import select, text
 
 from cursor_dashboard.client import AuthExpired, RateLimited
-from cursor_dashboard.domain.core import Actor, Conflict, Locked, NotFound, SecretError, Secrets
+from cursor_dashboard.domain.core import (Actor, AuthorizationRejected, Conflict, Locked, NotFound, SecretError,
+                                          Secrets)
 from cursor_dashboard.infrastructure.persistence.legacy import import_backup, read_backup
 from cursor_dashboard.infrastructure.persistence.models import (AccountTag, Credential, Grant, Lease,
     LegacyMapping, Membership, Metadata, Tag, User)
@@ -35,6 +38,12 @@ def token(marker="base", subject="user_test", expiry=None):
               "marker": marker}
     body = base64.urlsafe_b64encode(json.dumps(claims).encode()).decode().rstrip("=")
     return f"eyJhbGciOiJIUzI1NiJ9.{body}.signature"
+
+
+def pending_poll():
+    response = requests.Response()
+    response.status_code = 404
+    return requests.HTTPError(response=response)
 
 
 def data(limit=None, cycle="2026-09-01T00:00:00+00:00"):
@@ -372,21 +381,41 @@ class CredentialConcurrencyTest(CoreFixture, unittest.IsolatedAsyncioTestCase):
         self.core.credentials.gateway = callback
         self.core.accounts.gateway = callback
 
-    async def test_authorization_validates_usage_before_committing_credentials(self):
-        calls = []
+    async def browser_authorize(self, actor=None, **kwargs):
+        """Start a browser authorization and poll until the synthetic confirmation completes it."""
+        actor = actor or self.actor
+        started = await self.core.accounts.begin_authorization(actor, self.first, **kwargs)
+        url = urlsplit(started["login_url"])
+        self.assertEqual((url.scheme, url.netloc, url.path), ("https", "cursor.com", "/loginDeepControl"))
+        self.assertEqual(set(parse_qs(url.query)), {"challenge", "uuid", "mode"})
+        for _ in range(3):
+            self.core.accounts._authorizations[started["id"]].next_poll = 0
+            result = await self.core.accounts.poll_authorization(actor, self.first, started["id"])
+            if result["status"] == "completed":
+                return result["account"]
+        self.fail("Browser authorization did not complete")
+
+    async def test_browser_authorization_validates_usage_before_committing_credentials(self):
+        calls, polls = [], {}
         async def fetch(cookie, label, name, *args):
             calls.append(name)
-            if name in {"me", "desktop_me"}:
-                return {"email": "created@example.test", "sub": "auth0|user_test", "authId": "auth0|user_test"}
+            self.assertEqual(cookie, "")
+            if name == "desktop_me":
+                return {"email": "created@example.test", "authId": "auth0|user_test"}
             if name == "desktop_poll":
+                polls[args[0]] = polls.get(args[0], 0) + 1
+                if polls[args[0]] == 1:
+                    raise pending_poll()
                 return {"accessToken": token("created"), "refreshToken": "created-rt"}
             return {}
         self.gateway(fetch)
-        view = await self.core.accounts.authorize(self.actor, self.first, "user_test::" + token("web"), label="Created")
+        view = await self.browser_authorize(label="Created")
         self.assertIsNotNone(view["data"])
         self.assertEqual(view["email"], "created@example.test")
         self.assertIn("desktop_grok", calls)
+        self.assertFalse({"me", "desktop_callback"} & set(calls))
         saved = self.repo.authorized(self.first, view["id"])
+        self.assertEqual((saved.secrets.cookie, saved.secrets.refresh_token), ("", "created-rt"))
         async def failing(cookie, label, name, *args):
             if name == "desktop_plan":
                 raise RateLimited("temporary")
@@ -394,9 +423,74 @@ class CredentialConcurrencyTest(CoreFixture, unittest.IsolatedAsyncioTestCase):
         self.gateway(failing)
         from cursor_dashboard.application.queries import QueryFailure
         with self.assertRaises(QueryFailure):
-            await self.core.accounts.authorize(self.actor, self.first, "user_test::" + token("new-web"),
-                                               label="Failed update", account_id=view["id"])
+            await self.browser_authorize(label="Failed update", account_id=view["id"])
         self.assertEqual(self.repo.authorized(self.first, view["id"]), saved)
+        async def other(cookie, label, name, *args):
+            if name == "desktop_poll":
+                return {"accessToken": token("other", subject="user_other"), "refreshToken": "other-rt"}
+            if name == "desktop_me":
+                return {"email": "other@example.test", "authId": "auth0|user_other"}
+            raise AssertionError("Another identity must be rejected before usage queries")
+        self.gateway(other)
+        with self.assertRaises(AuthorizationRejected) as caught:
+            await self.browser_authorize(account_id=view["id"])
+        self.assertEqual((caught.exception.code, caught.exception.status), ("authorization_account_mismatch", 422))
+        self.gateway(fetch)
+        with self.assertRaises(AuthorizationRejected) as caught:
+            await self.browser_authorize(label="Duplicate")
+        self.assertEqual((caught.exception.code, caught.exception.status), ("account_exists", 409))
+        self.assertEqual(self.repo.authorized(self.first, view["id"]), saved)
+        self.assertEqual(self.core.accounts._authorizations, {})
+
+    async def test_browser_authorization_is_private_paced_and_expires(self):
+        polls = 0
+        async def fetch(cookie, label, name, *args):
+            nonlocal polls
+            self.assertEqual(name, "desktop_poll")
+            polls += 1
+            raise pending_poll() if polls < 3 else RateLimited("temporary")
+        self.gateway(fetch)
+        accounts = self.core.accounts
+        started = await accounts.begin_authorization(self.actor, self.first, label="Pending")
+        with self.assertRaises(NotFound):
+            await accounts.poll_authorization(self.other, self.first, started["id"])
+        with self.assertRaises(NotFound):
+            await accounts.poll_authorization(self.actor, self.second, started["id"])
+        self.assertEqual((await accounts.poll_authorization(self.actor, self.first, started["id"]))["status"], "pending")
+        # Polls inside the pacing window do not reach Cursor.
+        self.assertEqual((await accounts.poll_authorization(self.actor, self.first, started["id"]))["status"], "pending")
+        self.assertEqual(polls, 1)
+        for expected in (2, 3):
+            accounts._authorizations[started["id"]].next_poll = 0
+            self.assertEqual((await accounts.poll_authorization(self.actor, self.first, started["id"]))["status"], "pending")
+            self.assertEqual(polls, expected)
+        self.assertEqual(accounts._authorizations[started["id"]].failures, 1)
+        accounts.cancel_authorization(self.other, self.first, started["id"])
+        accounts._authorizations[started["id"]].expires_at = int(time.time()) - 1
+        with self.assertRaises(AuthorizationRejected) as caught:
+            await accounts.poll_authorization(self.actor, self.first, started["id"])
+        self.assertEqual(caught.exception.code, "authorization_expired")
+        with self.assertRaises(NotFound):
+            await accounts.poll_authorization(self.actor, self.first, started["id"])
+        started = await accounts.begin_authorization(self.actor, self.first)
+        accounts.cancel_authorization(self.actor, self.first, started["id"])
+        accounts.cancel_authorization(self.actor, self.first, started["id"])
+        self.assertEqual(accounts._authorizations, {})
+        self.assertEqual(polls, 3)
+
+    async def test_browser_authorization_caps_each_user_and_honours_cancel_during_poll(self):
+        accounts = self.core.accounts
+        started = [await accounts.begin_authorization(self.actor, self.first) for _ in range(4)]
+        self.assertEqual(list(accounts._authorizations), [item["id"] for item in started[1:]])
+        latest = started[-1]["id"]
+        async def fetch(cookie, label, name, *args):
+            self.assertEqual(name, "desktop_poll")
+            accounts.cancel_authorization(self.actor, self.first, latest)
+            return {"accessToken": token("late"), "refreshToken": "late-rt"}
+        self.gateway(fetch)
+        with self.assertRaises(NotFound):
+            await accounts.poll_authorization(self.actor, self.first, latest)
+        self.assertEqual(accounts.list(self.actor, self.first), [])
 
     async def test_concurrent_refresh_and_heartbeat_keep_one_rotation(self):
         a = self.account(expiry=int(time.time()) + 1, snapshot=data(42))
@@ -553,16 +647,14 @@ class CredentialConcurrencyTest(CoreFixture, unittest.IsolatedAsyncioTestCase):
             await task
         self.assertTrue(self.repo.claim_lease(self.first, a.ref.account_id, "next", 1))
 
-    async def test_imported_cookie_exchange_persists_subject_without_losing_snapshot(self):
+    async def test_imported_cookie_without_refresh_token_requires_browser_reauthorization(self):
         a = self.repo.put_authorization(self.actor, self.first, email="same@example.test", subject=None,
                     label="Legacy", secrets=Secrets("legacy-cookie"), data=data(42))
-        from cursor_dashboard.desktop import DesktopSession
-        renewed = DesktopSession(token("exchanged"), "auth0|user_test", int(time.time())+7200, "exchanged-rt", "session")
-        with patch("cursor_dashboard.application.credentials.exchange_cookie", return_value=(renewed, a.email)):
-            current = await self.core.credentials.ensure(self.first, a.ref.account_id)
-        self.assertEqual(current.subject, "user_test")
-        self.assertEqual(current.ref.generation, a.ref.generation)
-        self.assertEqual(current.secrets.refresh_token, "exchanged-rt")
+        with self.assertRaises(AuthExpired):
+            await self.core.credentials.ensure(self.first, a.ref.account_id)
+        current = self.repo.authorized(self.first, a.ref.account_id)
+        self.assertTrue(current.invalid)
+        self.assertEqual(current.secrets, a.secrets)
         self.assertIsNotNone(self.core.accounts.get(self.actor, self.first, a.ref.account_id)["data"])
 
 
